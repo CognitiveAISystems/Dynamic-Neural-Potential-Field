@@ -1,0 +1,8 @@
+numpy
+torch
+torchvision
+pytorch_lightning
+einops
+matplotlib
+wandb
+tqdm
