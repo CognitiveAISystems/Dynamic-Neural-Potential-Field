@@ -1,12 +1,15 @@
 # Dynamic Neural Potential Field: Online Trajectory Optimization in Presence of Moving Obstacles
 
-Official Implementation of [Dyn-NPField]()
+Official Implementation of [Dyn-NPField](https://arxiv.org/abs/2410.06819)
 
-[Paper]() | [Video]( https://youtu.be/8NqUtvvCOi4?si=WsPIDKKH9Dgz2Uy9) | [Models]() | [Dataset]()
+![Dyn-NPField](https://github.com/user-attachments/assets/53c3f20a-3e9c-4c38-a5bf-453c30371902)
+
+[Paper](https://arxiv.org/abs/2410.06819) | [Video]( https://youtu.be/8NqUtvvCOi4?si=WsPIDKKH9Dgz2Uy9) | [Models]() | [Dataset]()
 
 ## OVERVIEW
-
 We address local trajectory planning for a mobile robot in the presence of static and dynamic obstacles. The trajectory is computed as a numerical solution to a Model Predictive Control (MPC) problem, with collision avoidance incorporated by adding obstacle repulsive potential to the MPC cost function. Our approach estimates this repulsive potential using a neural model. We explore three strategies for handling dynamic obstacles: treating them as a sequence of static environments, predicting a full sequence of repulsive potentials at once, and predicting future potentials step by step in an autoregressive mode.
+
+![image](https://github.com/user-attachments/assets/0907bb43-3868-4119-ab8e-52f5edcbd979)
 
 ## GETTING STARTED
 
@@ -100,7 +103,15 @@ If you use this framework please cite the following two papers:
 
 ### Dyn-NPField: 
 ```
-
+@misc{staroverov2024dynamicneuralpotentialfield,
+      title={Dynamic Neural Potential Field: Online Trajectory Optimization in Presence of Moving Obstacles}, 
+      author={Aleksey Staroverov and Muhammad Alhaddad and Aditya Narendra and Konstantin Mironov and Aleksandr Panov},
+      year={2024},
+      eprint={2410.06819},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2410.06819}, 
+}
 ```
 
 ### NPField:
