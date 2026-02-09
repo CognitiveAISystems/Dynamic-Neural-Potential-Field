@@ -35,11 +35,24 @@ We address local trajectory planning for a mobile robot in the presence of stati
    ```
 
 3. **Run the Docker Container:**
-   After the image is built, run a container from it. Replace `<your-image-name>` with the name you used in the previous step.
+   After building the image, run a container from it. The following commands will first remove any existing container named `dyn_npfield`, then start a new one with the specified options. The `NPField` directory is mounted from your host into the container (instead of being copied):
+
    ```bash
-   docker run -it --gpus all --name dyn_npfield -p 80:80 dyn_npfield
+   docker rm -f dyn_npfield
+
+   docker run -it --gpus all --name dyn_npfield -p 80:80 \
+     -v "$(pwd)/NPField:/app/NPField" \
+     -v /data/Docker_data/npfiled_dataset:/app/NPField/dataset \
+     dyn_npfield \
+     # Add any additional parameters you require here, for example:
+     # --some-option value --another-option
    ```
-   The `--gpus all` flag enables GPU support in the container, and `-p 80:80` forwards port 80 from the container to the host, enabling any web service running inside the container to be accessible on the host machine.
+
+   - The `--gpus all` flag enables GPU support in the container.
+   - The `-p 80:80` option forwards port 80 from the container to the host, making any web service inside the container accessible via the host's port 80.
+   - The `-v "$(pwd)/NPField:/app/NPField"` bind-mounts your local `NPField` folder into the container so changes on the host are reflected immediately.
+   - The `-v /data/Docker_data/npfiled_dataset:/app/NPField/dataset` mounts a local directory containing your datasets into the container at the given path.
+   - You can optionally add more command-line arguments or environment variables at the end of the `docker run` command to control the application's behavior.
 
 4. **Accessing the Container:**
    You can access the running container via:
@@ -47,6 +60,22 @@ We address local trajectory planning for a mobile robot in the presence of stati
     docker exec -it dyn_npfield /bin/bash
    ```
    This will open a bash shell inside the container where you can interact with the software and run commands.
+
+5. **Example Run (Default Parameters 0 0 0):**
+   Inside the container, run the following command to generate the default example GIF:
+   ```bash
+   export NPFIELD_DATASET_DIR=/app/NPField/dataset/dataset1000
+   python NPField/script_d3/NPField_model_GPT.py 0 0 0
+   ```
+   This script is intended for testing the neural net and visualizing the resulting neural potential field in the presence of a dynamic obstacle.
+   Parameters for `NPField/script_d3/NPField_model_GPT.py`:
+   - `episode` (int): index into the dataset episode list.
+   - `id_dyn` (int): dynamic obstacle id within the episode.
+   - `angle` (float, degrees): query heading angle for inference (passed internally in radians).
+   Optional flags:
+   - `--device` (`cpu` or `cuda`): inference device.
+   - `--chunk-size` (int): batch size for grid inference.
+   Output GIFs are written to `NPField/output` with names like `NPField_D3_ep{episode}_dyn{id_dyn}_angle_{angle}deg.gif`.
 
 #### Troubleshooting:
 - Ensure CUDA-compatible drivers are installed on your host machine.

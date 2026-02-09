@@ -22,7 +22,7 @@ sys.path.append(transpath_dir)
 
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
+from torch.nn import functional as F 
 from torch.distributions import MultivariateNormal
 from torch.distributions import Categorical, Multinomial
 
@@ -272,16 +272,31 @@ class GPT(nn.Module):
 
         #final_tokens = [encoded_input, map_encode_robot, dyn_x_cr_encode, dyn_y_cr_encode, dyn_t_encode_sin, dyn_t_encode_cos ,x_emb, y_emb, theta_emb_sin, theta_emb_cos]
 
-        res_array = torch.zeros((1,10))
         future_steps = 10
+        batch_size = input_batch.shape[0]
+        res_array = torch.zeros((batch_size, future_steps), device=input_batch.device)
 
-        tok_emb = torch.cat((encoded_input, map_encode_robot, dyn_x_cr_encode, dyn_y_cr_encode, dyn_t_encode_sin, dyn_t_encode_cos ,x_emb, y_emb, theta_emb_sin, theta_emb_cos), dim=0).unsqueeze(0)
+        tok_emb = torch.stack(
+            (
+                encoded_input,
+                map_encode_robot,
+                dyn_x_cr_encode,
+                dyn_y_cr_encode,
+                dyn_t_encode_sin,
+                dyn_t_encode_cos,
+                x_emb,
+                y_emb,
+                theta_emb_sin,
+                theta_emb_cos,
+            ),
+            dim=1,
+        )
 
         
         for step_i in range(future_steps):
             
     
-            pos = torch.arange(0, tok_emb.shape[1], dtype=torch.long, device=self.device) # shape (t)
+            pos = torch.arange(0, tok_emb.shape[1], dtype=torch.long, device=tok_emb.device)
             pos_emb = self.transformer.wpe(pos)
             x = self.transformer.drop(tok_emb + pos_emb)
     
@@ -290,18 +305,13 @@ class GPT(nn.Module):
             x = self.transformer.ln_f(x) 
             logits = self.lm_head(x)
 
-            token_to_append = self.potential_encode(torch.clone(logits[0,-1,0].detach()).unsqueeze(0).unsqueeze(0)).unsqueeze(0)
-
-            tok_emb = torch.cat((tok_emb, token_to_append),dim=1)
-    
-            res_array[0,step_i] = logits[0,-1,0]#.item()
+            next_token = self.potential_encode(logits[:, -1, :])
+            tok_emb = torch.cat((tok_emb, next_token.unsqueeze(1)), dim=1)
+            res_array[:, step_i] = logits[:, -1, 0]
 
 
-        return res_array   #[0,:10,0].unsqueeze(0) #logits[0,:10,0].unsqueeze(0)  theta_emb_cos[:,:10]
+        return res_array   
 
-        # #print('Output: ',torch.stack(res_array).shape)
-
-        # return res_array #torch.stack(res_array).unsqueeze(0)
 
     #@torch.jit.script
     def encode_map_footprint(self, batch):
@@ -369,9 +379,7 @@ class GPT(nn.Module):
     
 
     def crop_block_size(self, block_size):
-        # model surgery to decrease the block size if necessary
-        # e.g. we may load the GPT2 pretrained model checkpoint (block size 1024)
-        # but want to use a smaller block size for some smaller, simpler model
+
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
         self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])

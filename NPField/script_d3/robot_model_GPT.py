@@ -1,13 +1,12 @@
 from acados_template import AcadosOcp, AcadosOcpSolver , AcadosModel
-import numpy as np
 import l4casadi as l4c
 from model_nn_GPT import GPT
 import torch
 
-from casadi import SX, DM, vertcat, sin, cos, tan, exp, if_else, pi , atan , logic_and , sqrt , fabs , atan2 , MX
+from casadi import SX, vertcat, sin, cos, tan, exp, if_else, pi , atan , logic_and , sqrt , fabs , atan2 , MX
 
     
-def robot_model(model_loaded):
+def robot_model(model_loaded, embedding_values):
     
     model_name = "robot_model"
 
@@ -45,27 +44,36 @@ def robot_model(model_loaded):
 
     model = AcadosModel()
 
-    print(model)
+    if embedding_values is None:
+        raise ValueError("embedding_values must be provided for L4CasADi input.")
 
-    l4c_model = l4c.L4CasADi(model_loaded, model_expects_batch_dim=True , name='y_expr',device='cuda')
+    class _EmbeddingWrappedModel(torch.nn.Module):
+        def __init__(self, base_model, embedding):
+            super().__init__()
+            self.base_model = base_model
+            emb = torch.tensor(embedding, dtype=torch.float32).view(1, -1)
+            self.register_buffer("embedding", emb)
+
+        def forward(self, xytheta):
+            xytheta = xytheta.reshape(-1, 3)
+            emb = self.embedding.to(device=xytheta.device, dtype=xytheta.dtype)
+            emb = emb.expand(xytheta.shape[0], -1)
+            inp = torch.cat([emb, xytheta], dim=1)
+            return self.base_model(inp)
+
+    wrapped_model = _EmbeddingWrappedModel(model_loaded, embedding_values)
+    l4c_model = l4c.L4CasADi(wrapped_model, name='y_expr', device='cuda')
 
     torch.cuda.empty_cache()
 
-    print("l4model " , l4c_model)
     num_out_embeding = 3456
     num_prediction_steps_obst = 10
     t_update_dynamic_obst = 0.5
-
-    dummy_embeding = np.zeros(num_out_embeding)
-
-    sym_p = MX.sym('sym_p',num_out_embeding)
-    embeding = MX.sym('in',num_out_embeding)
-    embeding = vertcat(sym_p[0:3456])
     cost_obst = MX.sym('cost_obst')
 
 
     potential_l4c_at_embeding = MX.sym('pot')
-    potential_l4c_at_embeding = l4c_model(vertcat(embeding,x,y,theta))
+    potential_l4c_at_embeding = l4c_model(vertcat(x, y, theta))
 
     cost_obst = potential_l4c_at_embeding[0][0]
    
@@ -83,7 +91,6 @@ def robot_model(model_loaded):
     model.x = sym_x
     model.xdot = x_dot
     model.u = sym_u
-    model.p = sym_p
     model.name = "robot_model"
 
     return model , l4c_model

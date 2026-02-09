@@ -4,11 +4,11 @@ import numpy as np
 import l4casadi as l4c
 import torch
 
-def create_solver(model_path):
+def create_solver(model_path, embedding_values):
 
     device = torch.device("cuda")
     model_path.to(device)
-    model , l4c_model = robot_model(model_path)
+    model , l4c_model = robot_model(model_path, embedding_values)
 
     # acados OCP handle
     ocp = AcadosOcp()
@@ -59,16 +59,6 @@ def create_solver(model_path):
     ocp.constraints.lbu = np.array([-0.35, -0.4 , 0.2])
     ocp.constraints.ubu = np.array([ 0.35,  0.4 , 10])
 
-    num_output_embeding = 3456
-    obst_x = 0
-    obst_y = 0
-    obst_theta = 0
-    parameter_embedding = [100] * num_output_embeding 
-    paramters = np.concatenate([parameter_embedding])
-
-    ocp.parameter_values = paramters
-
-                                
     x0 = np.array([0, 0, 0, 0 , 0])
     ocp.constraints.x0 = x0
 

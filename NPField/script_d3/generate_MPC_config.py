@@ -58,8 +58,5 @@ def generate_config(costmaps, num_map, num_orientation):
 
     theta_initial = atan2(y_path[1]-y_path[0],x_path[1]-x_path[0])+np.random.uniform(0, 0.3) 
     print("num_map = ", num_map , "num_orientaion = ", num_orientation) 
-    print("x_ref_points = ", x_path)
-    print("y_ref_points = ", y_path)
-    print("theta_0 = ", theta_initial)
 
     return x_path, y_path, theta_initial

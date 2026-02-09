@@ -1,20 +1,20 @@
 # Base image with NVIDIA CUDA 12.4.1 on Ubuntu 22.04
 ARG IMAGE_NAME=nvidia/cuda
-FROM ${IMAGE_NAME}:12.4.1-devel-ubuntu22.04 as base
+FROM ${IMAGE_NAME}:12.4.1-devel-ubuntu22.04 AS base
 
 # Set environment variables for various CUDA libraries
-ENV NV_CUDA_LIB_VERSION 12.4.1-1
-ENV NV_NVTX_VERSION 12.4.127-1
-ENV NV_LIBNPP_VERSION 12.2.5.30-1
-ENV NV_LIBNPP_PACKAGE libnpp-12-4=${NV_LIBNPP_VERSION}
-ENV NV_LIBCUSPARSE_VERSION 12.3.1.170-1
-ENV NV_LIBCUBLAS_PACKAGE_NAME libcublas-12-4
-ENV NV_LIBCUBLAS_VERSION 12.4.5.8-1
-ENV NV_LIBCUBLAS_PACKAGE ${NV_LIBCUBLAS_PACKAGE_NAME}=${NV_LIBCUBLAS_VERSION}
-ENV NV_LIBNCCL_PACKAGE_NAME libnccl2
-ENV NV_LIBNCCL_PACKAGE_VERSION 2.21.5-1
-ENV NCCL_VERSION 2.21.5-1
-ENV NV_LIBNCCL_PACKAGE ${NV_LIBNCCL_PACKAGE_NAME}=${NV_LIBNCCL_PACKAGE_VERSION}+cuda12.4
+ENV NV_CUDA_LIB_VERSION=12.4.1-1
+ENV NV_NVTX_VERSION=12.4.127-1
+ENV NV_LIBNPP_VERSION=12.2.5.30-1
+ENV NV_LIBNPP_PACKAGE=libnpp-12-4=${NV_LIBNPP_VERSION}
+ENV NV_LIBCUSPARSE_VERSION=12.3.1.170-1
+ENV NV_LIBCUBLAS_PACKAGE_NAME=libcublas-12-4
+ENV NV_LIBCUBLAS_VERSION=12.4.5.8-1
+ENV NV_LIBCUBLAS_PACKAGE=${NV_LIBCUBLAS_PACKAGE_NAME}=${NV_LIBCUBLAS_VERSION}
+ENV NV_LIBNCCL_PACKAGE_NAME=libnccl2
+ENV NV_LIBNCCL_PACKAGE_VERSION=2.21.5-1
+ENV NCCL_VERSION=2.21.5-1
+ENV NV_LIBNCCL_PACKAGE=${NV_LIBNCCL_PACKAGE_NAME}=${NV_LIBNCCL_PACKAGE_VERSION}+cuda12.4
 
 # Update and install necessary Linux packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,16 +34,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcusparse-12-4=${NV_LIBCUSPARSE_VERSION} \
     ${NV_LIBCUBLAS_PACKAGE} \
     ${NV_LIBNCCL_PACKAGE} \
-    && rm -rf /var/lib/apt/lists/*docke
-
-# Upgrade pip
-RUN pip3 install --upgrade pip
+    && rm -rf /var/lib/apt/lists/*
 
 # Create a Python virtual environment and activate it
 RUN python3 -m venv /env
 ENV PATH="/env/bin:$PATH"
 
-RUN pip3 install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu124
+# Upgrade pip in the venv
+RUN pip install --upgrade pip
+
+# Install PyTorch with CUDA 12.4 wheels and Python dependencies
+RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 && \
+    pip install \
+        pytorch-lightning \
+        wandb \
+        einops \
+        transformers \
+        pillow \
+        matplotlib \
+        numpy \
+        imageio \
+        requests \
+        tqdm \
+        casadi
 
 # Copy your files into the container
 COPY Planners /app/Planners
@@ -68,9 +81,9 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/app/third-party/acados/lib
 ENV ACADOS_SOURCE_DIR="/app/third-party/acados"
 
 
-# Install L4casadi
+# Install L4casadi from the main V2 branch
 RUN cd /app/third-party && \
-    git clone https://github.com/Tim-Salzmann/l4casadi.git && \
+    git clone --branch main https://github.com/Tim-Salzmann/l4casadi.git && \
     cd l4casadi && \
     pip install -r requirements_build.txt && \
     pip install . --no-build-isolation
