@@ -61,7 +61,7 @@ We address local trajectory planning for a mobile robot in the presence of stati
    ```
    This will open a bash shell inside the container where you can interact with the software and run commands.
 
-5. **Example Run (Default Parameters 0 0 0):**
+5. **Example Run:**
    Inside the container, run the following command to generate the default example GIF:
    ```bash
    export NPFIELD_DATASET_DIR=/app/NPField/dataset/dataset1000
@@ -76,6 +76,28 @@ We address local trajectory planning for a mobile robot in the presence of stati
    - `--device` (`cpu` or `cuda`): inference device.
    - `--chunk-size` (int): batch size for grid inference.
    Output GIFs are written to `NPField/output` with names like `NPField_D3_ep{episode}_dyn{id_dyn}_angle_{angle}deg.gif`.
+
+   ```bash
+   python NPField/script_d3/test_solver_GPT.py --map-id 993
+
+   python NPField/script_d2/test_solver.py --map-id 993
+
+   export NPFIELD_DATASET_DIR=/app/NPField/dataset/dataset1000 && python NPField/script_d3/train_model.py \
+  --resume-from /app/NPField/dataset/trained-models/NPField_onlyGPT_predmap9.pth \
+  --epochs 10 \
+  --lr 5e-5 \
+  --batch-size 128 \
+  --val-batch-size 16 \
+  --n-layer 4 \
+  --n-head 4 \
+  --n-embd 576 \
+  --dropout 0.1 \
+  --amp \
+  --no-map-loss \
+  --checkpoint-name NPField_D3_finetune.pth
+
+
+   ```
 
 #### Troubleshooting:
 - Ensure CUDA-compatible drivers are installed on your host machine.

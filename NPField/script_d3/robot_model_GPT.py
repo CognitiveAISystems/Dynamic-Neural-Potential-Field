@@ -1,9 +1,27 @@
-from acados_template import AcadosOcp, AcadosOcpSolver , AcadosModel
+from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
 import l4casadi as l4c
 from model_nn_GPT import GPT
 import torch
 
-from casadi import SX, vertcat, sin, cos, tan, exp, if_else, pi , atan , logic_and , sqrt , fabs , atan2 , MX
+from casadi import (
+    SX,
+    vertcat,
+    sin,
+    cos,
+    tan,
+    exp,
+    if_else,
+    pi,
+    atan,
+    logic_and,
+    sqrt,
+    fabs,
+    atan2,
+    MX,
+    fmin,
+    fmax,
+)
+from mpc_params import TIME_STEPS, OBSTACLE_PRED_DT
 
     
 def robot_model(model_loaded, embedding_values):
@@ -62,26 +80,31 @@ def robot_model(model_loaded, embedding_values):
             return self.base_model(inp)
 
     wrapped_model = _EmbeddingWrappedModel(model_loaded, embedding_values)
-    l4c_model = l4c.L4CasADi(wrapped_model, name='y_expr', device='cuda')
+    l4c_model = l4c.L4CasADi(wrapped_model, name="y_expr", device="cuda")
 
     torch.cuda.empty_cache()
 
     num_out_embeding = 3456
-    num_prediction_steps_obst = 10
-    t_update_dynamic_obst = 0.5
+    num_prediction_steps_obst = TIME_STEPS
+    t_update_dynamic_obst = OBSTACLE_PRED_DT
     cost_obst = MX.sym('cost_obst')
 
 
     potential_l4c_at_embeding = MX.sym('pot')
     potential_l4c_at_embeding = l4c_model(vertcat(x, y, theta))
 
-    cost_obst = potential_l4c_at_embeding[0][0]
+    # Evaluate predicted obstacle potentials on [0, TIME_STEPS * OBSTACLE_PRED_DT]
+    # and hold the last prediction afterwards.
+    max_t_pred = num_prediction_steps_obst * t_update_dynamic_obst
+    t_point_clamped = fmin(fmax(t_point, 0), max_t_pred)
+
+    cost_obst = potential_l4c_at_embeding[num_prediction_steps_obst - 1][0]
    
     for j in range(num_prediction_steps_obst):
-        cond_1 = t_point >= j * t_update_dynamic_obst
-        cond_2 = t_point <  (j * t_update_dynamic_obst + t_update_dynamic_obst)
-        cond_3 = logic_and(cond_1 , cond_2)
-        cost_obst = if_else(cond_3 , potential_l4c_at_embeding[j][0] , cost_obst)
+        cond_1 = t_point_clamped >= j * t_update_dynamic_obst
+        cond_2 = t_point_clamped < ((j + 1) * t_update_dynamic_obst)
+        cond_3 = logic_and(cond_1, cond_2)
+        cost_obst = if_else(cond_3, potential_l4c_at_embeding[j][0], cost_obst)
  
     model.cost_y_expr = vertcat(sym_x, sym_u , cost_obst)
     model.cost_y_expr_e = vertcat(sym_x, cost_obst)

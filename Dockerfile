@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     vim \
     python3-pip \
     python3-venv \
+    libgomp1 \
     libopenblas-dev \
     wget \
     cuda-libraries-12-4=${NV_CUDA_LIB_VERSION} \
@@ -70,7 +71,7 @@ RUN cd /app/third-party && \
     cd acados && \
     git submodule update --recursive --init --depth 1  && \
     mkdir -p build && cd build && \
-    cmake .. -DACADOS_WITH_QPOASES=ON && \
+    cmake .. -DACADOS_WITH_QPOASES=ON -DACADOS_WITH_OPENMP=ON && \
     make install -j4
 
 # Install acados python Interface    

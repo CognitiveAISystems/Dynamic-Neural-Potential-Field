@@ -1,469 +1,187 @@
-import pickle
-import sys
-from math import floor
+import argparse
+import math
 import os
+import pickle
+from pathlib import Path
 
-# Append the path to the TransPath folder to sys.path
-script_dir = os.path.dirname(__file__)  
-project_dir = os.path.dirname(script_dir)  
-transpath_dir = os.path.join(project_dir, 'TransPath')  # Path to the TransPath directory
-sys.path.append(transpath_dir)
-
+import imageio
 import matplotlib.pyplot as plt
 import numpy as np
-import pytorch_lightning as pl
 import torch
-import torch.nn as nn
-import wandb
-from modules.attention import SpatialTransformer
-from modules.decoder import Decoder
 
-from modules.encoder import Encoder
-from modules.pos_emb import PosEmbeds
-from torch import nn
-from torch.utils.data import ConcatDataset, DataLoader, TensorDataset
-import random  
-import imageio
+from model_nn import Autoencoder_path
+
+TIME_STEPS = 10
+RESOLUTION = 100
+DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def resolve_paths() -> tuple[Path, Path]:
+    script_dir = Path(__file__).resolve().parent
+    npfield_dir = script_dir.parent
+    repo_root = npfield_dir.parent
 
-
-def base_loss(criterion, na_outputs, va_outputs):
-    return criterion(na_outputs.histories, va_outputs.paths)
-
-
-def adv_loss(criterion, na_outputs, va_outputs):
-    loss_1 = criterion(
-        torch.clamp(na_outputs.histories - na_outputs.paths - va_outputs.paths, 0, 1),
-        torch.zeros_like(na_outputs.histories),
+    dataset_root = Path(
+        os.getenv("NPFIELD_DATASET_DIR", repo_root / "NPField" / "dataset" / "dataset1000")
     )
-    na_cost = (na_outputs.paths * na_outputs.g).sum((1, 2, 3), keepdim=True)
-    va_cost = (va_outputs.paths * va_outputs.g).sum((1, 2, 3), keepdim=True)
-    cost_coefs = (na_cost / va_cost - 1).view(-1, 1, 1, 1)
-    loss_2 = criterion(
-        (na_outputs.paths - va_outputs.paths) * cost_coefs,
-        torch.zeros_like(na_outputs.histories),
+    checkpoint_path = Path(
+        os.getenv(
+            "NPFIELD_CHECKPOINT",
+            repo_root / "NPField" / "dataset" / "trained-models" / "NPField_Dynamic_10_A100.pth",
+        )
     )
-    return loss_1 + loss_2
+    return dataset_root, checkpoint_path
 
 
-class Autoencoder_path(pl.LightningModule):
-    def __init__(
-        self,
-        in_channels=2,
-        out_channels=8,
-        hidden_channels=64,
-        attn_blocks=4,
-        attn_heads=4,
-        cnn_dropout=0.15,
-        attn_dropout=0.15,
-        downsample_steps=3,
-        resolution=(50, 50),
-        mode="f",
-        *args,
-        **kwargs,
-    ):
-        super().__init__()
-        heads_dim = hidden_channels // attn_heads
-        self.encoder = Encoder(1, hidden_channels, downsample_steps, cnn_dropout, num_groups=32)
-        self.encoder_robot = Encoder(1, 1, 3, 0.15, num_groups=1)
-        
-        self.pos = PosEmbeds(
-            hidden_channels,
-            (
-                resolution[0] // 2**downsample_steps,
-                resolution[1] // 2**downsample_steps,
-            ),
-        )
-        self.transformer = SpatialTransformer(
-            hidden_channels, attn_heads, heads_dim, attn_blocks, attn_dropout
-        )
-        self.decoder_pos = PosEmbeds(
-            hidden_channels,
-            (
-                resolution[0] // 2**downsample_steps,
-                resolution[1] // 2**downsample_steps,
-            ),
-        )
-        self.decoder = Decoder(hidden_channels, out_channels//2, 1, cnn_dropout)           ####### out_channels
-
-        self.x_cord = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
-        self.y_cord = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
-        self.theta_sin = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
-        self.theta_cos = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
-        
-        self.dyn_x_cord = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
-        self.dyn_y_cord = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
-        self.dyn_theta_sin = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
-        self.dyn_theta_cos = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
-
-        self.encoder_after = Encoder(hidden_channels, 32, 1, 0.15, num_groups=32)
-        self.decoder_after = Decoder(32, hidden_channels, 1, 0.15, num_groups=32)
-        
-        self.decoder_MAP = Decoder(hidden_channels, 2, 3, 0.15, num_groups=32)
-
-        self.linear_after_mean = nn.Sequential(
-            nn.Linear(740, 256),                       # 1225  676
-            nn.GELU(),
-            nn.Linear(256, 128),
-            nn.GELU(),
-            nn.Linear(128, 64),
-            nn.GELU(),
-            nn.Linear(64, 10),
-            nn.GELU(),
+def load_dataset(dataset_root: Path) -> dict:
+    required = {
+        "sub_maps_all": dataset_root / "dataset_1000_maps_0_100_all.pkl",
+        "footprints": dataset_root / "data_footprint.pkl",
+        "obst_motion_info": dataset_root / "dataset_1000_maps_obst_motion.pkl",
+    }
+    missing = [str(path) for path in required.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Dataset files not found. Set NPFIELD_DATASET_DIR to the dataset1000 directory. "
+            f"Missing: {', '.join(missing)}"
         )
 
-        self.recon_criterion = nn.MSELoss()
-        self.mode = mode
-        self.k = 1
-        self.automatic_optimization = False
-        self.save_hyperparameters()
+    return {name: pickle.load(open(path, "rb")) for name, path in required.items()}
 
-    def forward(self, batch):
-        batch = batch.reshape(-1, 612+4*16+3)                      # 1164 615
 
-        map_encode_robot = batch[..., :-(3+4*16)].to(self.device)
-        
-        dyn_x_cr_encode = batch[..., -(3+4*16):-(3+3*16)].to(self.device)
-        dyn_y_cr_encode = batch[..., -(3+3*16):-(3+2*16)].to(self.device)
-        dyn_tsin_encode = batch[..., -(3+2*16):-(3+1*16)].to(self.device)
-        dyn_tcos_encode = batch[..., -(3+1*16):-(3+0*16)].to(self.device)
-
-        x_crd = torch.reshape(batch[..., -3:-2].to(self.device), (-1, 1))
-        y_crd = torch.reshape(batch[..., -2:-1].to(self.device), (-1, 1))
-        theta = torch.reshape(batch[..., -1:].to(self.device), (-1, 1))
-    
-
-        x_cr_encode = self.x_cord(x_crd)
-        y_cr_encode = self.y_cord(y_crd)
-        tsin_encode = self.theta_sin(torch.sin(theta))
-        tcos_encode = self.theta_cos(torch.cos(theta))
-        
-        
-        encoded_input = torch.cat(
-            (
-                map_encode_robot,
-                x_cr_encode,
-                y_cr_encode,
-                tsin_encode,
-                tcos_encode,
-                dyn_x_cr_encode,
-                dyn_y_cr_encode,
-                dyn_tsin_encode,
-                dyn_tcos_encode,
-            ),
-            1,
-        )
-        
-        encoded_input_mean = self.linear_after_mean(encoded_input)
-
-        return encoded_input_mean
-
-    def encode_map_footprint(self, batch):
-        mapp = batch[..., :2500].to(self.device)
-        mapp = torch.reshape(mapp, (-1, 1, 50, 50))
-    
-
-        footprint = batch[..., 2500:-3].to(self.device)
-        footprint = torch.reshape(footprint, (-1, 1, 50, 50))
-        
-        dyn_x_crd = torch.reshape(batch[..., -3:-2].to(self.device), (-1, 1))
-        dyn_y_crd = torch.reshape(batch[..., -2:-1].to(self.device), (-1, 1))
-        dyn_theta = torch.reshape(batch[..., -1:].to(self.device), (-1, 1))
-
-        map_encode = self.encoder(mapp)
-
-        map_encode_robot = (
-            self.encoder_robot(footprint).flatten().view(mapp.shape[0], -1)
+def build_model(checkpoint_path: Path, device: str) -> Autoencoder_path:
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(
+            f"Checkpoint not found: {checkpoint_path}. "
+            "Set NPFIELD_CHECKPOINT to the model .pth file."
         )
 
-        encoded_input = self.encoder_after(map_encode)
-        encoded_input = self.decoder_after(encoded_input)
-        
-        decoded_map = self.decoder_MAP(encoded_input)
-        
-        encoded_input = self.pos(encoded_input)
-        encoded_input = self.transformer(encoded_input)
-        encoded_input = self.decoder_pos(encoded_input)
-        encoded_input = self.decoder(encoded_input).view(encoded_input.shape[0], -1)
-        
-        dyn_x_cr_encode = self.dyn_x_cord(dyn_x_crd)
-        dyn_y_cr_encode = self.dyn_y_cord(dyn_y_crd)
-        dyn_tsin_encode = self.dyn_theta_sin(torch.sin(dyn_theta))
-        dyn_tcos_encode = self.dyn_theta_cos(torch.cos(dyn_theta))
+    model = Autoencoder_path(mode="k")
+    state_dict = torch.load(checkpoint_path, map_location="cpu")
+    model.load_state_dict(state_dict)
+    model.to(device)
+    model.eval()
+    return model
 
-        encoded_input = torch.cat((encoded_input, map_encode_robot,
-                                  dyn_x_cr_encode,
-                                  dyn_y_cr_encode,
-                                  dyn_tsin_encode,
-                                  dyn_tcos_encode), -1)
 
-        return encoded_input, decoded_map
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run Dyn-NPField D2 inference and save a GIF."
+    )
+    parser.add_argument("episode", nargs="?", type=int, default=0, help="Episode index.")
+    parser.add_argument("id_dyn", nargs="?", type=int, default=0, help="Dynamic obstacle id.")
+    parser.add_argument("angle", nargs="?", type=float, default=0.0, help="Angle in degrees.")
+    parser.add_argument(
+        "--device",
+        default=DEFAULT_DEVICE,
+        choices=["cpu", "cuda"],
+        help="Device to run inference on.",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=4096,
+        help="Batch size for grid inference to limit memory use.",
+    )
+    return parser.parse_args()
 
-    def encode_map_pos(self, batch):
-        batch = batch.reshape(-1, 612+4*16+3)                      # 1164 615
 
-        map_encode_robot = batch[..., :-(3+4*16)].to(self.device)
-        
-        dyn_x_cr_encode = batch[..., -(3+4*16):-(3+3*16)].to(self.device)
-        dyn_y_cr_encode = batch[..., -(3+3*16):-(3+2*16)].to(self.device)
-        dyn_tsin_encode = batch[..., -(3+2*16):-(3+1*16)].to(self.device)
-        dyn_tcos_encode = batch[..., -(3+1*16):-(3+0*16)].to(self.device)
-
-        x_crd = torch.reshape(batch[..., -3:-2].to(self.device), (-1, 1))
-        y_crd = torch.reshape(batch[..., -2:-1].to(self.device), (-1, 1))
-        theta = torch.reshape(batch[..., -1:].to(self.device), (-1, 1))
-    
-
-        x_cr_encode = self.x_cord(x_crd)
-        y_cr_encode = self.y_cord(y_crd)
-        tsin_encode = self.theta_sin(torch.sin(theta))
-        tcos_encode = self.theta_cos(torch.cos(theta))
-        
-        
-        encoded_input = torch.cat(
-            (
-                map_encode_robot,
-                x_cr_encode,
-                y_cr_encode,
-                tsin_encode,
-                tcos_encode,
-                dyn_x_cr_encode,
-                dyn_y_cr_encode,
-                dyn_tsin_encode,
-                dyn_tcos_encode,
-            ),
-            1,
+def encode_map(
+    model: Autoencoder_path,
+    test_map: np.ndarray,
+    test_footprint: np.ndarray,
+    d_info: np.ndarray,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    map_inp = (
+        torch.tensor(
+            np.hstack((test_map.flatten(), test_footprint.flatten())),
+            dtype=torch.float32,
+            device=device,
         )
-        
-        encoded_input_mean = self.linear_after_mean(encoded_input)
+        .unsqueeze(0)
+        / 100.0
+    )
+    d_info_tensor = torch.tensor(d_info, dtype=torch.float32, device=device).unsqueeze(0)
+    with torch.no_grad():
+        return model.encode_map_footprint(torch.hstack((map_inp, d_info_tensor)))
 
-        return encoded_input_mean
-    
-    
-    def process_map_to_transformer(self, batch):
-        mapp, x_crd, y_crd, theta, dyn_x_crd, dyn_y_crd, dyn_theta = batch
-        map_encode = self.encoder(mapp[:, :1, :, :])
 
-        map_encode_robot = (
-            self.encoder_robot(mapp[:, -1:, :, :]).flatten().view(mapp.shape[0], -1)
+def infer_grid(
+    model: Autoencoder_path,
+    encoded: torch.Tensor,
+    angle: float,
+    device: str,
+    chunk_size: int,
+) -> np.ndarray:
+    print(f"Infer angle (rad): {angle:.6f}")
+    xs = np.linspace(0.0, 5.0, RESOLUTION, endpoint=False)
+    ys = np.linspace(0.0, 5.0, RESOLUTION, endpoint=False)
+    grid_x, grid_y = np.meshgrid(xs, ys, indexing="ij")
+    coords = np.stack((grid_x.ravel(), grid_y.ravel()), axis=1)
+
+    coords_t = torch.tensor(coords, dtype=torch.float32, device=device)
+    theta = torch.full((coords_t.shape[0], 1), angle, dtype=torch.float32, device=device)
+    encoded_rep = encoded.repeat(coords_t.shape[0], 1)
+    input_batch = torch.hstack((encoded_rep, coords_t, theta))
+
+    outputs = []
+    with torch.no_grad():
+        for start in range(0, input_batch.shape[0], chunk_size):
+            chunk = input_batch[start : start + chunk_size]
+            outputs.append(model.encode_map_pos(chunk).cpu())
+    output = torch.cat(outputs, dim=0)
+
+    res = output.reshape(RESOLUTION, RESOLUTION, TIME_STEPS).permute(2, 0, 1).numpy()
+    return res
+
+
+def save_gif(frames: list[np.ndarray], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    imageio.mimsave(str(output_path), frames, format="GIF", loop=65535)
+    print(str(output_path))
+
+
+def main() -> None:
+    args = parse_args()
+    dataset_root, checkpoint_path = resolve_paths()
+    data = load_dataset(dataset_root)
+
+    angle_rad = math.radians(args.angle)
+    print(
+        f"Episode ID: {args.episode} ID_dyn: {args.id_dyn} "
+        f"Angle: {args.angle} deg ({angle_rad:.6f} rad)"
+    )
+    print(f"Using dataset root: {dataset_root}")
+    print(f"Using checkpoint: {checkpoint_path}")
+
+    model = build_model(checkpoint_path, args.device)
+
+    test_map = data["sub_maps_all"]["submaps"][args.episode, args.id_dyn]
+    test_footprint = data["footprints"]["footprint_husky"]
+    d_info = data["obst_motion_info"]["motion_dynamic_obst"][args.episode, args.id_dyn]
+
+    encoded, _ = encode_map(model, test_map, test_footprint, d_info, args.device)
+    res_array = infer_grid(model, encoded, angle_rad, args.device, args.chunk_size)
+
+    frames = []
+    for tme in range(TIME_STEPS):
+        fig, (ax1, ax2) = plt.subplots(
+            nrows=1, ncols=2, figsize=(15, 5), gridspec_kw={"wspace": 0.3, "hspace": 0.1}
         )
+        ax1.imshow(data["sub_maps_all"]["submaps"][args.episode, tme])
+        ax2.imshow(np.rot90(res_array[tme]))
+        fig.canvas.draw()
+        frame = np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
+        frames.append(frame)
+        plt.close(fig)
 
-        dyn_x_cr_encode = self.dyn_x_cord(dyn_x_crd)
-        dyn_y_cr_encode = self.dyn_y_cord(dyn_y_crd)
-        dyn_tsin_encode = self.dyn_theta_sin(torch.sin(dyn_theta))
-        dyn_tcos_encode = self.dyn_theta_cos(torch.cos(dyn_theta))
-
-        encoded_input = map_encode 
-        encoded_input = self.encoder_after(encoded_input)
-        encoded_input = self.decoder_after(encoded_input)
-        
-        decoded_map = self.decoder_MAP(encoded_input)
-        
-        encoded_input = self.pos(encoded_input)
-        encoded_input = self.transformer(encoded_input)
-        encoded_input = self.decoder_pos(encoded_input)
-        encoded_input = self.decoder(encoded_input).view(encoded_input.shape[0], -1)
-
-        encoded_input = torch.cat(
-            (
-                encoded_input,
-                map_encode_robot,
-                #x_cr_encode,
-                #y_cr_encode,
-                #tsin_encode,
-                #tcos_encode,
-                dyn_x_cr_encode,
-                dyn_y_cr_encode,
-                dyn_tsin_encode,
-                dyn_tcos_encode,
-            ),
-            1,
-        )
-
-        return encoded_input
-
-    def step_ctrl(self, batch):
-        mapp, x_crd, y_crd, theta, dyn_x_crd, dyn_y_crd, dyn_theta = batch
-        map_encode = self.encoder(mapp[:, :1, :, :])
-
-        map_encode_robot = (
-            self.encoder_robot(mapp[:, -1:, :, :]).flatten().view(mapp.shape[0], -1)
-        )
-        x_cr_encode = self.x_cord(x_crd)
-        y_cr_encode = self.y_cord(y_crd)
-        tsin_encode = self.theta_sin(torch.sin(theta))
-        tcos_encode = self.theta_cos(torch.cos(theta))
-        
-        dyn_x_cr_encode = self.dyn_x_cord(dyn_x_crd)
-        dyn_y_cr_encode = self.dyn_y_cord(dyn_y_crd)
-        dyn_tsin_encode = self.dyn_theta_sin(torch.sin(dyn_theta))
-        dyn_tcos_encode = self.dyn_theta_cos(torch.cos(dyn_theta))
-
-        encoded_input = map_encode 
-        encoded_input = self.encoder_after(encoded_input)
-        encoded_input = self.decoder_after(encoded_input)
-        
-        decoded_map = self.decoder_MAP(encoded_input)
-        
-        encoded_input = self.pos(encoded_input)
-        encoded_input = self.transformer(encoded_input)
-        encoded_input = self.decoder_pos(encoded_input)
-        encoded_input = self.decoder(encoded_input).view(encoded_input.shape[0], -1)
-
-        encoded_input = torch.cat(
-            (
-                encoded_input,
-                map_encode_robot,
-                x_cr_encode,
-                y_cr_encode,
-                tsin_encode,
-                tcos_encode,
-                dyn_x_cr_encode,
-                dyn_y_cr_encode,
-                dyn_tsin_encode,
-                dyn_tcos_encode,
-            ),
-            1,
-        )
-
-        #encoded_input_max = self.linear_after_max(encoded_input)
-        encoded_input_mean = self.linear_after_mean(encoded_input)
-
-        return encoded_input_mean, decoded_map
-
-    def training_step(self, batch, output):
-        optimizer = self.optimizers()
-        sch = self.lr_schedulers()
-
-        loss = self.step_ctrl(batch)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        sch.step()
-
-        self.log("train_loss", loss, on_step=False, on_epoch=True)
-        self.log("lr", sch.get_last_lr()[0], on_step=True, on_epoch=False)
-        return loss
-
-    def step(self, batch, batch_idx, regime):
-        map_design, start, goal, gt_hmap = batch
-        inputs = (
-            torch.cat([map_design, start + goal], dim=1)
-            if self.mode in ("f", "nastar")
-            else torch.cat([map_design, goal], dim=1)
-        )
-        predictions = self(inputs)
-
-        loss = self.recon_criterion((predictions + 1) / 2 * self.k, gt_hmap)
-        self.log(f"{regime}_recon_loss", loss, on_step=False, on_epoch=True)
-        return loss
-
-    def training_step(self, batch, batch_idx):
-        optimizer = self.optimizers()
-        sch = self.lr_schedulers()
-
-        loss = self.step(batch, batch_idx, "train")
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        sch.step()
-
-        self.log("train_loss", loss, on_step=False, on_epoch=True)
-        self.log("lr", sch.get_last_lr()[0], on_step=True, on_epoch=False)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        loss = self.step(batch, batch_idx, "val")
-        self.log("val_loss", loss, on_step=False, on_epoch=True)
-        return loss
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.0004)
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer, max_lr=4e-4, total_steps=self.trainer.estimated_stepping_batches
-        )
-        return [optimizer], [scheduler]
-    
-    
-
-sub_maps_all = pickle.load(open("../../dataset/dataset1000/dataset_1000_maps_0_100_all.pkl", "rb"))
-footprints = pickle.load(open("../../dataset/dataset1000/data_footprint.pkl", "rb"))
-dyn_obst_info = pickle.load(open("../../dataset/dataset1000/dataset_initial_position_dynamic_obst.pkl", "rb"))
-obst_motion_info = pickle.load(open("../../dataset/dataset1000/dataset_1000_maps_obst_motion.pkl", "rb"))
+    angle_tag = f"{args.angle:.1f}deg".replace(".", "p")
+    npfield_dir = Path(__file__).resolve().parent.parent
+    output_dir = npfield_dir / "output"
+    gif_name = f"NPField_D2_ep{args.episode}_dyn{args.id_dyn}_angle_{angle_tag}.gif"
+    save_gif(frames, output_dir / gif_name)
 
 
-
-
-
-device = torch.device("cuda")
-model_path = Autoencoder_path(mode="k")
-model_path.to(device)
-load_check = torch.load("../../trained-models/NPField_Dynamic_10_A100.pth")
-model_path.load_state_dict(load_check)
-model_path.eval()
-
-ANGLE = 2.0
-EPISODE = 1
-
-import sys
-print(f'Episode ID: {sys.argv[1]} ID_dyn: {sys.argv[2]} Angle: {sys.argv[3]}')
-
-EPISODE = int(sys.argv[1])
-ID_DYN = int(sys.argv[2])
-ANGLE = float(sys.argv[3])
-
-
-for theta_angle in [ANGLE]:
-
-    for map_id in [EPISODE]:
-        id_dyn = ID_DYN
-
-        time = 11
-        resolution = 100
-
-        res_array = np.zeros((time, resolution, resolution))
-        test_map = sub_maps_all["submaps"][map_id,id_dyn]
-        test_footprint = footprints["footprint_husky"]
-
-        map_inp = (torch.tensor(np.hstack((test_map.flatten(), test_footprint.flatten()))).unsqueeze(0).float().to(device)/100.)
-        theta = torch.tensor([theta_angle]).unsqueeze(0).float().to(device)   #np.deg2rad([90])
-        d_info = obst_motion_info['motion_dynamic_obst'][map_id,id_dyn]
-
-        
-        with torch.no_grad():
-            #map_embedding = model_path.encode_map_footprint(map_inp).detach()
-            map_embedding, map_decoded = model_path.encode_map_footprint(torch.hstack((map_inp,torch.from_numpy(d_info).cuda().unsqueeze(0).float())))
-            map_embedding = map_embedding.detach()
-
-            for ii, i in enumerate(np.arange(0.0, 5, 5 / resolution)):
-                for jj, j in enumerate(np.arange(0.0, 5, 5 / resolution)):
-                    x = torch.tensor([i]).float().unsqueeze(0).to(device)
-                    y = torch.tensor([j]).float().unsqueeze(0).to(device)
-
-                    test_batch = torch.hstack((map_embedding, x.to(device), y.to(device), theta.to(device)))
-                    #test_batch = torch.hstack((test_batch,torch.from_numpy(d_info).cuda().unsqueeze(0).float()))
-                    model_output = model_path.encode_map_pos(test_batch)
-                    for tme in range(10):
-                        res_array[tme, ii, jj] = model_output[0][tme].item()
-
-
-        frames = []
-        for tme in range(11):
-            fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2,figsize=(15,5), gridspec_kw={ 'wspace' : 0.3, 'hspace' : 0.1})
-            ax1.imshow(sub_maps_all["submaps"][map_id,tme])
-            ax2.imshow(np.rot90(res_array[tme]))
-            # ax3.scatter(
-            #     x=potential_2_husky["position_potential"][map_id,id_dyn,:,::4,0],
-            #     y=potential_2_husky["position_potential"][map_id,id_dyn,:,::4,1],
-            #     s=potential_2_husky["position_potential"][map_id,id_dyn,:,::4,3]/8,
-            # )
-            fig.canvas.draw()
-            data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-            data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-            frames.append(data)
-            plt.close(fig)
-
-        imageio.mimsave('NPField_D2_Test_ep{}_angle_{}.gif'.format(map_id,str(d_info[2])[:3]), frames, format="GIF", loop=65535)
-        print('NPField_D2_Test_ep{}_angle_{}.gif'.format(map_id,str(d_info[2])[:3]))
-    
+if __name__ == "__main__":
+    main()

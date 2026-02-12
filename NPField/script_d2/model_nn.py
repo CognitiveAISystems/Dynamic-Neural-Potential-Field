@@ -1,31 +1,19 @@
-import pickle
 import sys
-from math import floor
 import os
 
 # Append the path to the TransPath folder to sys.path
-script_dir = os.path.dirname(__file__)  
-project_dir = os.path.dirname(script_dir)  
-transpath_dir = os.path.join(project_dir, 'TransPath')  # Path to the TransPath directory
+script_dir = os.path.dirname(__file__)
+project_dir = os.path.dirname(script_dir)
+transpath_dir = os.path.join(project_dir, "TransPath")  # Path to the TransPath directory
 sys.path.append(transpath_dir)
 
-import matplotlib.pyplot as plt
-import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import wandb
 from modules.attention import SpatialTransformer
 from modules.decoder import Decoder
-
 from modules.encoder import Encoder
 from modules.pos_emb import PosEmbeds
-from torch import nn
-from torch.utils.data import ConcatDataset, DataLoader, TensorDataset
-import random  
-import imageio
-
-
 
 
 def base_loss(criterion, na_outputs, va_outputs):
