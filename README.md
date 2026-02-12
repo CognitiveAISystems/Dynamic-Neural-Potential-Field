@@ -5,7 +5,7 @@ Official Implementation of [Dyn-NPField](https://arxiv.org/abs/2410.06819)
 <p align="center">
   <img src="https://github.com/user-attachments/assets/c7ac2be5-dedf-45bd-9446-36eadf804e3f" width="45%" alt="Dyn-NPField"/>
   <img src="https://github.com/user-attachments/assets/708d6c69-51b1-453d-af0f-209310400143" width="45%" alt="Dyn-NPField"/>
-</p>!
+</p>
 
 
 [Paper](https://arxiv.org/abs/2410.06819) | [Video]( https://youtu.be/8NqUtvvCOi4?si=WsPIDKKH9Dgz2Uy9) | [Models](https://disk.yandex.ru/d/arqq97Yun_3f0w) | [Dataset](https://disk.yandex.ru/d/fbWIw6NJgjBBSw)
@@ -128,5 +128,6 @@ If you use this framework please cite the following two papers:
       url={https://arxiv.org/abs/2310.16362}, 
 }
 ```
+
 
 
