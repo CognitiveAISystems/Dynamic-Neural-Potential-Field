@@ -8,6 +8,7 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn as nn
 
 from model_nn_GPT import GPT, GPTConfig
 
@@ -17,7 +18,7 @@ RESOLUTION = 100
 DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def resolve_paths() -> tuple[Path, Path]:
+def resolve_paths(finetune_checkpoint: str = "") -> tuple[Path, Path]:
     script_dir = Path(__file__).resolve().parent
     npfield_dir = script_dir.parent
     repo_root = npfield_dir.parent
@@ -25,12 +26,13 @@ def resolve_paths() -> tuple[Path, Path]:
     dataset_root = Path(
         os.getenv("NPFIELD_DATASET_DIR", repo_root / "NPField" / "dataset" / "dataset1000")
     )
-    checkpoint_path = Path(
+    default_checkpoint = Path(
         os.getenv(
             "NPFIELD_CHECKPOINT",
             repo_root / "NPField" / "dataset" / "trained-models" / "NPField_onlyGPT_predmap9.pth",
         )
     )
+    checkpoint_path = Path(finetune_checkpoint).expanduser() if finetune_checkpoint else default_checkpoint
     return dataset_root, checkpoint_path
 
 
@@ -51,6 +53,60 @@ def load_dataset(dataset_root: Path) -> dict:
     return {name: pickle.load(open(path, "rb")) for name, path in required.items()}
 
 
+def _unwrap_state_dict(payload: object) -> dict:
+    if isinstance(payload, dict) and "state_dict" in payload and isinstance(payload["state_dict"], dict):
+        return payload["state_dict"]
+    if isinstance(payload, dict) and "model" in payload and isinstance(payload["model"], dict):
+        return payload["model"]
+    if isinstance(payload, dict):
+        return payload
+    raise TypeError("Checkpoint payload is not a valid state_dict dict.")
+
+
+def _infer_model_args_from_state_dict(state_dict: dict) -> dict:
+    n_embd = 576
+    if "x_encode.weight" in state_dict and hasattr(state_dict["x_encode.weight"], "shape"):
+        n_embd = int(state_dict["x_encode.weight"].shape[0])
+
+    layer_ids = set()
+    for key in state_dict.keys():
+        if key.startswith("transformer.h."):
+            parts = key.split(".")
+            if len(parts) > 2 and parts[2].isdigit():
+                layer_ids.add(int(parts[2]))
+    n_layer = (max(layer_ids) + 1) if layer_ids else 4
+
+    # n_head is not encoded in tensor shapes; keep historical default for D3.
+    n_head = 4
+    if n_embd % n_head != 0:
+        n_head = 1
+
+    return dict(
+        n_layer=n_layer,
+        n_head=n_head,
+        n_embd=n_embd,
+        block_size=1024,
+        bias=True,
+        vocab_size=1024,
+        dropout=0.1,
+    )
+
+
+def _load_partial_state_dict(model: nn.Module, state_dict: dict) -> tuple[int, int]:
+    model_state = model.state_dict()
+    matched = {}
+    skipped = 0
+    for key, value in state_dict.items():
+        if key not in model_state:
+            continue
+        if model_state[key].shape != value.shape:
+            skipped += 1
+            continue
+        matched[key] = value
+    model.load_state_dict(matched, strict=False)
+    return len(matched), skipped
+
+
 def build_model(checkpoint_path: Path, device: str) -> GPT:
     if not checkpoint_path.exists():
         raise FileNotFoundError(
@@ -58,26 +114,19 @@ def build_model(checkpoint_path: Path, device: str) -> GPT:
             "Set NPFIELD_CHECKPOINT to the model .pth file."
         )
 
-    model_args = dict(
-        n_layer=4,
-        n_head=4,
-        n_embd=576,
-        block_size=1024,
-        bias=True,
-        vocab_size=1024,
-        dropout=0.1,
-    )
+    pretrained_payload = torch.load(checkpoint_path, map_location="cpu")
+    pretrained_dict = _unwrap_state_dict(pretrained_payload)
+    model_args = _infer_model_args_from_state_dict(pretrained_dict)
+    print("Inferred model args from checkpoint:", model_args)
+
     gptconf = GPTConfig(**model_args)
     model_gpt = GPT(gptconf)
 
-    pretrained_dict = torch.load(checkpoint_path, map_location="cpu")
-    model_dict = model_gpt.state_dict()
-    rejected_keys = [k for k in model_dict if k not in pretrained_dict]
-    print("REJECTED KEYS test GPT:", rejected_keys)
-
-    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-    model_dict.update(pretrained_dict)
-    model_gpt.load_state_dict(model_dict)
+    loaded_count, skipped_shape = _load_partial_state_dict(model_gpt, pretrained_dict)
+    print(
+        f"Checkpoint load summary: loaded={loaded_count}, "
+        f"skipped_shape_mismatch={skipped_shape}"
+    )
 
     model_gpt.to(device)
     model_gpt.eval()
@@ -102,6 +151,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4096,
         help="Batch size for grid inference to limit memory use.",
+    )
+    parser.add_argument(
+        "--finetune-checkpoint",
+        type=str,
+        default="",
+        help="Optional path to a finetuned D3 checkpoint; overrides NPFIELD_CHECKPOINT.",
     )
     return parser.parse_args()
 
@@ -158,7 +213,7 @@ def save_gif(frames: list[np.ndarray], output_path: Path) -> None:
 
 def main() -> None:
     args = parse_args()
-    dataset_root, checkpoint_path = resolve_paths()
+    dataset_root, checkpoint_path = resolve_paths(args.finetune_checkpoint)
     data = load_dataset(dataset_root)
 
     angle_rad = math.radians(args.angle)

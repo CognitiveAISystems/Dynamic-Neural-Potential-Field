@@ -37,19 +37,20 @@ from mpc_params import (
 )
 
 
-def resolve_paths() -> tuple[Path, Path, Path]:
+def resolve_paths(finetune_checkpoint: str = "") -> tuple[Path, Path, Path]:
     script_dir = Path(__file__).resolve().parent
     npfield_dir = script_dir.parent
     repo_root = npfield_dir.parent
     dataset_root = Path(
         os.getenv("NPFIELD_DATASET_DIR", repo_root / "NPField" / "dataset" / "dataset1000")
     )
-    checkpoint_path = Path(
+    default_checkpoint = Path(
         os.getenv(
             "NPFIELD_CHECKPOINT",
             repo_root / "NPField" / "dataset" / "trained-models" / "NPField_onlyGPT_predmap9.pth",
         )
     )
+    checkpoint_path = Path(finetune_checkpoint).expanduser() if finetune_checkpoint else default_checkpoint
     output_dir = npfield_dir / "output"
     return dataset_root, checkpoint_path, output_dir
 
@@ -137,8 +138,7 @@ def test_solver(
     total_turn_rad = 0.0
     for i in range(len(theta) - 1):
         total_turn_rad += abs(_wrap_to_pi(theta[i + 1] - theta[i]))
-    desired_tf = _compute_feasible_tf(length_path, total_turn_rad)
-    time_scale = desired_tf / SOLVER_BASE_TF
+    base_desired_tf = _compute_feasible_tf(length_path, total_turn_rad)
 
     k = 0
     x_ref = np.append(x_ref, x_ref_points[0])
@@ -159,59 +159,117 @@ def test_solver(
     init_x = x_ref[0 : N + 1]
     init_y = y_ref[0 : N + 1]
     init_theta = theta_ref[0 : N + 1]
-    x_goal = np.array([init_x[-1], init_y[-1], v_e, init_theta[-1], desired_tf])
-
     yref[:, 0] = init_x[0:N]
     yref[:, 1] = init_y[0:N]
     yref[:, 2] = V_MAX
     yref[:, 3] = init_theta[0:N]
-    # Stage references should align with stage times [0, tf) (terminal uses tf).
-    yref[:, 4] = np.linspace(0, desired_tf, N, endpoint=False)
 
     a = np.zeros(1)
-
-    yref_e = np.concatenate([x_goal, a])
-    x_traj_init = np.transpose([yref[:, 0], yref[:, 1], yref[:, 2], yref[:, 3], yref[:, 4]])
 
     simX = np.zeros((N + 1, 5))
     simU = np.zeros((N, nu))
 
-    for i in range(N):
-        acados_solver.set(i, "y_ref", yref[i])
-        acados_solver.set(i, "x", x_traj_init[i])
-        acados_solver.set(i, "u", np.array([0.0, 0.0, time_scale]))
-        # Keep a fixed time-scale factor so physical horizon matches desired_tf.
-        acados_solver.set(i, "lbu", np.array([CTRL_A_MIN, CTRL_W_MIN, time_scale]))
-        acados_solver.set(i, "ubu", np.array([CTRL_A_MAX, CTRL_W_MAX, time_scale]))
-    acados_solver.set(N, "y_ref", yref_e)
-    acados_solver.set(N, "x", x_goal)
-    acados_solver.set(0, "lbx", x0)
-    acados_solver.set(0, "ubx", x0)
-
     t = time.perf_counter()
     status = 1
     max_attempts = 3
-    for attempt in range(max_attempts):
-        status = acados_solver.solve()
-        if status == 0:
-            break
+    tf_growth_factors = (1.0, 2.0, 3.0)
+    goal_reach_tol_m = 0.18
+    final_goal_error_m = float("inf")
+    selected_tf = base_desired_tf
+    selected_growth = 1.0
+    best_key = None
+    best_candidate = None
+
+    for growth in tf_growth_factors:
+        desired_tf = base_desired_tf * growth
+        # Stage references should align with stage times [0, tf) (terminal uses tf).
+        yref[:, 4] = np.linspace(0, desired_tf, N, endpoint=False)
+        x_goal = np.array([init_x[-1], init_y[-1], v_e, init_theta[-1], desired_tf])
+        yref_e = np.concatenate([x_goal, a])
+        x_traj_init = np.transpose([yref[:, 0], yref[:, 1], yref[:, 2], yref[:, 3], yref[:, 4]])
+        time_scale = desired_tf / SOLVER_BASE_TF
+
+        for i in range(N):
+            acados_solver.set(i, "y_ref", yref[i])
+            acados_solver.set(i, "x", x_traj_init[i])
+            acados_solver.set(i, "u", np.array([0.0, 0.0, time_scale]))
+            acados_solver.set(i, "lbu", np.array([CTRL_A_MIN, CTRL_W_MIN, time_scale]))
+            acados_solver.set(i, "ubu", np.array([CTRL_A_MAX, CTRL_W_MAX, time_scale]))
+        acados_solver.set(N, "y_ref", yref_e)
+        acados_solver.set(N, "x", x_goal)
+        acados_solver.set(0, "lbx", x0)
+        acados_solver.set(0, "ubx", x0)
+
+        status = 1
+        for _ in range(max_attempts):
+            status = acados_solver.solve()
+            if status == 0:
+                break
+
+        candidate_simX = np.zeros((N + 1, 5))
+        for i in range(N + 1):
+            x = acados_solver.get(i, "x")
+            candidate_simX[i, 0] = x[0]
+            candidate_simX[i, 1] = x[1]
+            candidate_simX[i, 2] = x[2]
+            candidate_simX[i, 3] = x[3]
+            candidate_simX[i, 4] = x[4]
+        candidate_goal_error_m = math.hypot(
+            candidate_simX[-1, 0] - x_ref_points[-1], candidate_simX[-1, 1] - y_ref_points[-1]
+        )
+        candidate_simU = np.zeros((N, nu))
+        for i in range(N):
+            candidate_simU[i, :] = acados_solver.get(i, "u")
+        candidate_cost = float(acados_solver.get_cost())
+        candidate_key = (0 if status == 0 else 1, candidate_goal_error_m, candidate_cost)
+        if best_key is None or candidate_key < best_key:
+            best_key = candidate_key
+            best_candidate = {
+                "status": status,
+                "goal_error_m": candidate_goal_error_m,
+                "cost": candidate_cost,
+                "simX": candidate_simX.copy(),
+                "simU": candidate_simU.copy(),
+                "desired_tf": desired_tf,
+                "growth": growth,
+            }
+
+        print(
+            f"TF candidate {desired_tf:.2f}s (x{growth:.2f}) -> "
+            f"status={status}, terminal goal error={candidate_goal_error_m:.3f} m, cost={candidate_cost:.3f}"
+        )
+
+    if best_candidate is None:
+        raise RuntimeError("Failed to evaluate any TF candidate.")
+
+    status = best_candidate["status"]
+    final_goal_error_m = best_candidate["goal_error_m"]
+    selected_tf = best_candidate["desired_tf"]
+    selected_growth = best_candidate["growth"]
+    simX[:, :] = best_candidate["simX"]
+    simU[:, :] = best_candidate["simU"]
+    cost = float(best_candidate["cost"])
+    print(
+        f"Selected TF candidate {selected_tf:.2f}s (x{selected_growth:.2f}) with "
+        f"status={status}, terminal goal error={final_goal_error_m:.3f} m, cost={cost:.3f}"
+    )
     print("status", status)
     if status != 0:
         print(
             f"WARNING: acados did not fully converge after {max_attempts} attempts; "
             "trajectory may be suboptimal."
         )
+    if final_goal_error_m > goal_reach_tol_m:
+        print(
+            f"WARNING: terminal error is {final_goal_error_m:.3f} m with tf={selected_tf:.2f}s; "
+            "episode may visually stop before fully reaching the goal."
+        )
     elapsed = 1000 * (time.perf_counter() - t)
     print(f"Trajectory solve time (ms): {elapsed:.2f}")
     ROB_x = np.zeros([N + 1, 9])
     ROB_y = np.zeros([N + 1, 9])
     for i in range(N + 1):
-        x = acados_solver.get(i, "x")
-        simX[i, 0] = x[0]
-        simX[i, 1] = x[1]
-        simX[i, 2] = x[2]
-        simX[i, 3] = x[3]
-        simX[i, 4] = round(x[4], 1)
+        simX[i, 4] = round(simX[i, 4], 1)
         ROB_x[i, 0] = simX[i, 0] + 0.6 * cos(simX[i, 3] - 0.59)
         ROB_x[i, 1] = simX[i, 0] + 0.514 * cos(simX[i, 3] - 0.24)
         ROB_x[i, 2] = simX[i, 0] + 0.75 * cos(simX[i, 3] - 0.16)
@@ -238,11 +296,6 @@ def test_solver(
         initial_path[i, 1] = init_y[i]
         initial_path[i, 2] = init_theta[i]
 
-    for i in range(N):
-        u = acados_solver.get(i, "u")
-        simU[i, :] = u
-    cost = acados_solver.get_cost()
-    acados_solver.print_statistics()
     print("cost", cost)
 
     if num_map == -1:
@@ -851,26 +904,81 @@ def load_datasets(dataset_root):
     )
 
 
-def load_model(checkpoint_path):
-    model_args = dict(
-        n_layer=4,
-        n_head=4,
-        n_embd=576,
+def _unwrap_state_dict(payload):
+    if isinstance(payload, dict) and "state_dict" in payload and isinstance(payload["state_dict"], dict):
+        return payload["state_dict"]
+    if isinstance(payload, dict) and "model" in payload and isinstance(payload["model"], dict):
+        return payload["model"]
+    if isinstance(payload, dict):
+        return payload
+    raise TypeError("Checkpoint payload is not a valid state_dict dict.")
+
+
+def _infer_model_args_from_state_dict(state_dict):
+    n_embd = 576
+    if "x_encode.weight" in state_dict and hasattr(state_dict["x_encode.weight"], "shape"):
+        n_embd = int(state_dict["x_encode.weight"].shape[0])
+
+    layer_ids = set()
+    for key in state_dict.keys():
+        if key.startswith("transformer.h."):
+            parts = key.split(".")
+            if len(parts) > 2 and parts[2].isdigit():
+                layer_ids.add(int(parts[2]))
+    n_layer = (max(layer_ids) + 1) if layer_ids else 4
+
+    n_head = 4
+    if n_embd % n_head != 0:
+        n_head = 1
+
+    return dict(
+        n_layer=n_layer,
+        n_head=n_head,
+        n_embd=n_embd,
         block_size=1024,
         bias=True,
         vocab_size=1024,
         dropout=0.1,
     )
+
+
+def _load_partial_state_dict(model, state_dict):
+    model_state = model.state_dict()
+    matched = {}
+    skipped = []
+    for key, value in state_dict.items():
+        if key not in model_state:
+            continue
+        if model_state[key].shape != value.shape:
+            skipped.append(f"{key}: ckpt{tuple(value.shape)} != model{tuple(model_state[key].shape)}")
+            continue
+        matched[key] = value
+    model.load_state_dict(matched, strict=False)
+    return matched, skipped
+
+
+def load_model(checkpoint_path, device):
+    payload = torch.load(checkpoint_path, map_location="cpu")
+    pretrained_dict = _unwrap_state_dict(payload)
+    model_args = _infer_model_args_from_state_dict(pretrained_dict)
+    print("Inferred model args:", model_args)
+
     gptconf = GPTConfig(**model_args)
     model_loaded = GPT(gptconf)
-    pretrained_dict = torch.load(checkpoint_path)
-    model_dict = model_loaded.state_dict()
-    rejected_keys = [k for k, v in model_dict.items() if k not in pretrained_dict]
-    print("REJECTED KEYS: ", rejected_keys)
-    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-    model_dict.update(pretrained_dict)
-    model_loaded.load_state_dict(model_dict)
-    model_loaded.to(torch.device("cuda"))
+    matched, skipped = _load_partial_state_dict(model_loaded, pretrained_dict)
+    print(
+        "Checkpoint load summary:",
+        f"loaded={len(matched)}",
+        f"skipped_shape_mismatch={len(skipped)}",
+    )
+    if skipped:
+        print("First shape mismatches:")
+        for msg in skipped[:20]:
+            print("  -", msg)
+        if len(skipped) > 20:
+            print(f"  ... and {len(skipped) - 20} more")
+
+    model_loaded.to(device)
     model_loaded.eval()
     return model_loaded
 
@@ -905,14 +1013,21 @@ def parse_args():
             "plus a static circular obstacle (r=1.0m) at (2.5,2.5)."
         ),
     )
+    parser.add_argument(
+        "--finetune-checkpoint",
+        type=str,
+        default="",
+        help="Optional path to a finetuned D3 checkpoint; overrides NPFIELD_CHECKPOINT.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    dataset_root, checkpoint_path, output_dir = resolve_paths()
+    dataset_root, checkpoint_path, output_dir = resolve_paths(args.finetune_checkpoint)
     map_data, footprint, dyn_obst_info, obst_motion_info, costmap = load_datasets(dataset_root)
-    model_loaded = load_model(checkpoint_path)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_loaded = load_model(checkpoint_path, device)
 
     if args.test_episode:
         # Copy map tensor to keep deterministic test obstacle local to this run.

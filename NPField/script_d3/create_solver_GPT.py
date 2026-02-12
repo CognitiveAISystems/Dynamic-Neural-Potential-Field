@@ -40,10 +40,10 @@ from mpc_params import (
     W_Y_E,
 )
 
-def create_solver(model_path, embedding_values):
-    device = torch.device("cuda")
-    model_path.to(device)
-    model, l4c_model = robot_model(model_path, embedding_values)
+def create_solver(model_loaded, embedding_values):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_loaded.to(device)
+    model, l4c_model = robot_model(model_loaded, embedding_values)
 
     # acados OCP handle
     ocp = AcadosOcp()

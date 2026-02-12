@@ -15,10 +15,6 @@ We address local trajectory planning for a mobile robot in the presence of stati
 
 ### **Using Docker**
 
-#### Prerequisites:
-1. **Docker:** Ensure Docker is installed on your machine. You can download it from [Docker's official site](https://docs.docker.com/get-docker/).
-2. **NVIDIA GPU:** Since this Dockerfile is based on NVIDIA CUDA, having an NVIDIA GPU and ensuring [NVIDIA Docker Toolkit](https://github.com/NVIDIA/nvidia-docker) is installed are necessary for GPU acceleration.
-
 #### Steps:
 
 1. **Clone the Repository:**
@@ -29,7 +25,7 @@ We address local trajectory planning for a mobile robot in the presence of stati
    ```
 
 2. **Build the Docker Image:**
-   Use the following command to build the Docker image from the Dockerfile in your repository. Replace `<your-image-name>` with a name of your choice for the Docker image.
+   Use the following command to build the Docker image from the Dockerfile in your repository.
    ```bash
     docker build -t dyn_npfield .
    ```
@@ -43,16 +39,10 @@ We address local trajectory planning for a mobile robot in the presence of stati
    docker run -it --gpus all --name dyn_npfield -p 80:80 \
      -v "$(pwd)/NPField:/app/NPField" \
      -v /data/Docker_data/npfiled_dataset:/app/NPField/dataset \
-     dyn_npfield \
-     # Add any additional parameters you require here, for example:
-     # --some-option value --another-option
+     dyn_npfield
    ```
-
-   - The `--gpus all` flag enables GPU support in the container.
-   - The `-p 80:80` option forwards port 80 from the container to the host, making any web service inside the container accessible via the host's port 80.
    - The `-v "$(pwd)/NPField:/app/NPField"` bind-mounts your local `NPField` folder into the container so changes on the host are reflected immediately.
    - The `-v /data/Docker_data/npfiled_dataset:/app/NPField/dataset` mounts a local directory containing your datasets into the container at the given path.
-   - You can optionally add more command-line arguments or environment variables at the end of the `docker run` command to control the application's behavior.
 
 4. **Accessing the Container:**
    You can access the running container via:
@@ -65,7 +55,7 @@ We address local trajectory planning for a mobile robot in the presence of stati
    Inside the container, run the following command to generate the default example GIF:
    ```bash
    export NPFIELD_DATASET_DIR=/app/NPField/dataset/dataset1000
-   python NPField/script_d3/NPField_model_GPT.py 0 0 0
+   python NPField/script_d3/NPField_model_GPT.py --finetune-checkpoint /app/NPField/dataset/trained-models/NPField_D3_finetune.pth
    ```
    This script is intended for testing the neural net and visualizing the resulting neural potential field in the presence of a dynamic obstacle.
    Parameters for `NPField/script_d3/NPField_model_GPT.py`:
@@ -77,77 +67,34 @@ We address local trajectory planning for a mobile robot in the presence of stati
    - `--chunk-size` (int): batch size for grid inference.
    Output GIFs are written to `NPField/output` with names like `NPField_D3_ep{episode}_dyn{id_dyn}_angle_{angle}deg.gif`.
 
+6. **Train D3 (new model/checkpoint):**
    ```bash
-   python NPField/script_d3/test_solver_GPT.py --map-id 993
-
-   python NPField/script_d2/test_solver.py --map-id 993
-
    export NPFIELD_DATASET_DIR=/app/NPField/dataset/dataset1000 && python NPField/script_d3/train_model.py \
-  --resume-from /app/NPField/dataset/trained-models/NPField_onlyGPT_predmap9.pth \
-  --epochs 10 \
-  --lr 5e-5 \
-  --batch-size 128 \
-  --val-batch-size 16 \
-  --n-layer 4 \
-  --n-head 4 \
-  --n-embd 576 \
-  --dropout 0.1 \
-  --amp \
-  --no-map-loss \
-  --checkpoint-name NPField_D3_finetune.pth
+     --epochs 10 \
+     --lr 5e-5 \
+     --batch-size 64 \
+     --val-batch-size 16 \
+     --n-layer 4 \
+     --n-head 4 \
+     --n-embd 256 \
+     --dropout 0.1 \
+     --amp \
+     --no-map-loss \
+     --checkpoint-name NPField_D3_finetune.pth
+   ```
 
-
+7. **Test D3 trajectory with the finetuned checkpoint:**
+   ```bash
+   python NPField/script_d3/test_solver_GPT.py \
+     --map-id 3 \
+     --episodes 10 \
+     --finetune-checkpoint /app/NPField/dataset/trained-models/NPField_D3_finetune.pth \
+     --save-potential-gif
    ```
 
 #### Troubleshooting:
 - Ensure CUDA-compatible drivers are installed on your host machine.
 - Check for any Docker-related errors during image building or container running by examining the Docker logs.
-
-### **Without Docker**
-
-#### Prerequisites:
-- **Ubuntu 22.04:** Ensure you are running on an Ubuntu 22.04 environment.
-- **NVIDIA GPU:** A compatible NVIDIA GPU is necessary since the software relies on CUDA libraries.
-- **Python, Git, and Build Tools:** Install Python, Git, CMake, GCC, and other necessary tools.
-
-#### Steps:
-
-1. **Install CUDA and NVIDIA Drivers:**
-   Install CUDA 12.4.1 and corresponding NVIDIA drivers if they are not already installed.
-   ```bash
-   sudo apt-get install nvidia-cuda-toolkit
-   ```
-
-2. **Clone the Repository:**
-   Clone the repository that contains your project.
-   ```bash
-   git clone https://github.com/CognitiveAISystems/Dynamic-Neural-Potential-Field
-   cd Dynamic-Neural-Potential-Field
-   ```
-
-3. **Set Up Python Environment:**
-   It's recommended to use a virtual environment.
-   ```bash
-   python3 -m venv env
-   source env/bin/activate
-   pip install --upgrade pip
-   ```
-
-4. **Third Party Libraries:**
-   Compile and install the following libraries and their dependencies (PyTorch, CMake etc):
-   - [acados](https://github.com/acados/acados)
-   - [l4casadi](https://github.com/Tim-Salzmann/l4casadi)  
-
-6. **Run the Application:**
-   Navigate to NPField directory, choose the required version (d1, d2 or d3) and run: 
-   ```
-   python test_solver.py
-   ```
-
-#### Troubleshooting:
-- Ensure all dependencies and their versions are correctly installed.
-- Verify CUDA and GPU drivers are properly installed and recognized by your system.
-
 
 ## CITATION
 If you use this framework please cite the following two papers:

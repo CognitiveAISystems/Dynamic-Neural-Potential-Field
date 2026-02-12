@@ -25,19 +25,11 @@ def _try_create_comet_experiment(
     - If `comet_ml` is unavailable, training still runs.
     - If `COMET_API_KEY` is not set, training still runs.
     """
-    try:
-        from comet_ml import start  # type: ignore
-    except Exception:
-        return None
+    from comet_ml import start  # type: ignore
 
     api_key = os.getenv("COMET_API_KEY")
-    if not api_key:
-        return None
 
-    try:
-        return start(api_key=api_key, project_name=project_name, workspace=workspace)
-    except Exception:
-        return None
+    return start(api_key=api_key, project_name=project_name, workspace=workspace)
 
 
 def _load_pickle(path: Path) -> dict:
@@ -323,6 +315,32 @@ def _require_key(blob: dict, key: str, *, source_name: str) -> np.ndarray:
     return np.asarray(blob[key])
 
 
+def _load_partial_state_dict(model: nn.Module, payload: dict) -> tuple[list[str], list[str], list[str]]:
+    """
+    Load only checkpoint tensors that match existing model keys and shapes.
+    Returns (loaded_keys, skipped_shape_mismatch, missing_in_checkpoint).
+    """
+    model_state = model.state_dict()
+    filtered: dict[str, torch.Tensor] = {}
+    loaded_keys: list[str] = []
+    skipped_shape: list[str] = []
+
+    for key, tensor in payload.items():
+        if key not in model_state:
+            continue
+        if model_state[key].shape != tensor.shape:
+            skipped_shape.append(
+                f"{key}: ckpt{tuple(tensor.shape)} != model{tuple(model_state[key].shape)}"
+            )
+            continue
+        filtered[key] = tensor
+        loaded_keys.append(key)
+
+    missing_in_checkpoint = [k for k in model_state.keys() if k not in filtered]
+    model.load_state_dict(filtered, strict=False)
+    return loaded_keys, skipped_shape, missing_in_checkpoint
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train NPField D3 GPT model")
     parser.add_argument("--epochs", type=int, default=TrainConfig.epochs)
@@ -467,8 +485,24 @@ def main() -> None:
             payload = payload["state_dict"]
         if isinstance(payload, dict) and "model" in payload and isinstance(payload["model"], dict):
             payload = payload["model"]
-        model.load_state_dict(payload, strict=False)
+        if not isinstance(payload, dict):
+            raise TypeError(
+                f"Unsupported checkpoint format at {ckpt_resume}. Expected a dict-like state_dict."
+            )
+        loaded_keys, skipped_shape, missing_keys = _load_partial_state_dict(model, payload)
         print("resumed from:", ckpt_resume)
+        print(
+            "partial load summary:",
+            f"loaded={len(loaded_keys)}",
+            f"skipped_shape={len(skipped_shape)}",
+            f"missing_in_checkpoint={len(missing_keys)}",
+        )
+        if skipped_shape:
+            print("first shape mismatches:")
+            for msg in skipped_shape[:20]:
+                print("  -", msg)
+            if len(skipped_shape) > 20:
+                print(f"  ... and {len(skipped_shape) - 20} more")
 
     optimizer = torch.optim.Adam(model.parameters(), cfg.lr)
     use_amp = bool(args.amp and torch.cuda.is_available())

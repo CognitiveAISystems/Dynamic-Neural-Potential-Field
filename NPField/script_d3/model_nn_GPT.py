@@ -104,6 +104,23 @@ class GPT(nn.Module):
         self.dyn_y_cord = nn.Linear(1, config.n_embd, bias=False)
         self.dyn_theta_sin = nn.Linear(1, config.n_embd, bias=False)
         self.dyn_theta_cos = nn.Linear(1, config.n_embd, bias=False)
+        # Stronger coordinate pathway to emphasize dynamic-obstacle geometry.
+        self.coord_context_mlp = nn.Sequential(
+            nn.Linear(config.n_embd * 8, config.n_embd * 2, bias=False),
+            nn.GELU(),
+            nn.Linear(config.n_embd * 2, config.n_embd, bias=False),
+        )
+        self.coord_delta_mlp = nn.Sequential(
+            nn.Linear(config.n_embd * 4, config.n_embd, bias=False),
+            nn.GELU(),
+            nn.Linear(config.n_embd, config.n_embd, bias=False),
+        )
+        self.static_coord_gain = nn.Parameter(torch.tensor(1.25))
+        self.dynamic_coord_gain = nn.Parameter(torch.tensor(2.50))
+        self.relative_coord_gain = nn.Parameter(torch.tensor(2.00))
+        # Extra loss focus around dynamic obstacle (in world coordinates).
+        self.near_obstacle_alpha = 2.0
+        self.near_obstacle_sigma = 0.50
         
         
         in_channels=2
@@ -121,6 +138,8 @@ class GPT(nn.Module):
         self.encoder = Encoder(1, hidden_channels, downsample_steps, cnn_dropout, num_groups=32)
         self.encoder_robot = Encoder(1, 1, 3, 0.15, num_groups=1)
         self.encoder_robot_linear = nn.Linear(36, config.n_embd, bias=False)
+        # Map encoder output is 576-d; project to token width n_embd.
+        self.map_proj = nn.Linear(576, config.n_embd, bias=False)
         
         self.pos = PosEmbeds(
             hidden_channels,
@@ -140,6 +159,9 @@ class GPT(nn.Module):
         
         self.decoder_MAP_linear = nn.Linear(config.n_embd, 2304, bias=False)   # 64*6*6
         self.decoder_MAP = Decoder(hidden_channels, 2, 3, 0.15, num_groups=32)
+
+        self.query_embeds = nn.Parameter(torch.randn(10, config.n_embd))
+        torch.nn.init.normal_(self.query_embeds, mean=0.0, std=0.02)
 
         
         # with weight tying when using torch.compile() some warnings get generated:
@@ -180,6 +202,65 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    def _coord_tokens_with_relative(
+        self,
+        x_emb,
+        y_emb,
+        theta_emb_sin,
+        theta_emb_cos,
+        dyn_x_cr_encode,
+        dyn_y_cr_encode,
+        dyn_t_encode_sin,
+        dyn_t_encode_cos,
+    ):
+        x_emb = self.static_coord_gain * x_emb
+        y_emb = self.static_coord_gain * y_emb
+        theta_emb_sin = self.static_coord_gain * theta_emb_sin
+        theta_emb_cos = self.static_coord_gain * theta_emb_cos
+
+        dyn_x_cr_encode = self.dynamic_coord_gain * dyn_x_cr_encode
+        dyn_y_cr_encode = self.dynamic_coord_gain * dyn_y_cr_encode
+        dyn_t_encode_sin = self.dynamic_coord_gain * dyn_t_encode_sin
+        dyn_t_encode_cos = self.dynamic_coord_gain * dyn_t_encode_cos
+
+        coord_context = torch.cat(
+            (
+                x_emb,
+                y_emb,
+                theta_emb_sin,
+                theta_emb_cos,
+                dyn_x_cr_encode,
+                dyn_y_cr_encode,
+                dyn_t_encode_sin,
+                dyn_t_encode_cos,
+            ),
+            dim=-1,
+        )
+        coord_delta = torch.cat(
+            (
+                x_emb - dyn_x_cr_encode,
+                y_emb - dyn_y_cr_encode,
+                theta_emb_sin - dyn_t_encode_sin,
+                theta_emb_cos - dyn_t_encode_cos,
+            ),
+            dim=-1,
+        )
+        relative_coord_token = self.relative_coord_gain * (
+            self.coord_context_mlp(coord_context) + self.coord_delta_mlp(coord_delta)
+        )
+
+        return (
+            x_emb,
+            y_emb,
+            theta_emb_sin,
+            theta_emb_cos,
+            dyn_x_cr_encode,
+            dyn_y_cr_encode,
+            dyn_t_encode_sin,
+            dyn_t_encode_cos,
+            relative_coord_token,
+        )
+
         
             
 
@@ -198,6 +279,7 @@ class GPT(nn.Module):
         encoded_input = self.transformer_map(encoded_input)
         encoded_input = self.decoder_pos(encoded_input)
         encoded_input = self.decoder(encoded_input).view(encoded_input.shape[0], -1)
+        encoded_input = self.map_proj(encoded_input)
 
         dyn_x_cr_encode = self.dyn_x_cord(dyn_x_crd)
         dyn_y_cr_encode = self.dyn_y_cord(dyn_y_crd)
@@ -205,20 +287,49 @@ class GPT(nn.Module):
         dyn_t_encode_cos = self.dyn_theta_cos(torch.cos(dyn_theta))
         
 
-        x_emb = self.x_encode(x_crd)
-        y_emb = self.y_encode(y_crd)
-        theta_emb_sin = self.theta_encode_sin(torch.sin(theta))
-        theta_emb_cos = self.theta_encode_cos(torch.cos(theta))
+        x_emb = self.x_encode(x_crd.float())
+        y_emb = self.y_encode(y_crd.float())
+        theta_emb_sin = self.theta_encode_sin(torch.sin(theta.float()))
+        theta_emb_cos = self.theta_encode_cos(torch.cos(theta.float()))
+        (
+            x_emb,
+            y_emb,
+            theta_emb_sin,
+            theta_emb_cos,
+            dyn_x_cr_encode,
+            dyn_y_cr_encode,
+            dyn_t_encode_sin,
+            dyn_t_encode_cos,
+            relative_coord_token,
+        ) = self._coord_tokens_with_relative(
+            x_emb,
+            y_emb,
+            theta_emb_sin,
+            theta_emb_cos,
+            dyn_x_cr_encode,
+            dyn_y_cr_encode,
+            dyn_t_encode_sin,
+            dyn_t_encode_cos,
+        )
 
-        potential_emb = self.potential_encode(targets)
+        final_tokens = [
+            encoded_input,
+            map_encode_robot,
+            dyn_x_cr_encode,
+            dyn_y_cr_encode,
+            dyn_t_encode_sin,
+            dyn_t_encode_cos,
+            x_emb,
+            y_emb,
+            theta_emb_sin,
+            theta_emb_cos,
+            relative_coord_token,
+        ]
+        context_emb = torch.stack(final_tokens, dim=1)
+        queries = self.query_embeds[:num_predict].unsqueeze(0).expand(batch_size, -1, -1)
+        tok_emb = torch.cat((context_emb, queries), dim=1)
 
-        final_tokens = [encoded_input, map_encode_robot, dyn_x_cr_encode, dyn_y_cr_encode, dyn_t_encode_sin, dyn_t_encode_cos ,x_emb, y_emb, theta_emb_sin, theta_emb_cos]
-        
-        for i in range(num_predict):
-            final_tokens.append(potential_emb[:,i,:])
-        tok_emb = torch.stack(final_tokens, dim=1)#.permute(0, 2, 1, 3).reshape(batch_size, (4+num_predict)*seq_length, -1)  
-
-        pos = torch.arange(0, len(final_tokens), dtype=torch.long, device=self.device) # shape (t)
+        pos = torch.arange(0, tok_emb.shape[1], dtype=torch.long, device=self.device) # shape (t)
         pos_emb = self.transformer.wpe(pos)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
@@ -227,54 +338,78 @@ class GPT(nn.Module):
 
         if targets is not None:
             logits = self.lm_head(x)
-            decoded_maps = self.decoder_MAP(self.decoder_MAP_linear(x).view(-1,64,6,6)).view(batch_size,20,2,48,48)
+            potentials = torch.sigmoid(logits)
+            decoded_maps = self.decoder_MAP(self.decoder_MAP_linear(x).view(-1,64,6,6)).view(batch_size, x.shape[1], 2, 48, 48)
 
-            a = torch.flatten(decoded_maps[:,9:10,...], start_dim=3).squeeze(1)
+            map_token_idx = context_emb.shape[1] - 1
+            a = torch.flatten(decoded_maps[:, map_token_idx : map_token_idx + 1, ...], start_dim=3).squeeze(1)
             b = torch.flatten(mapp[:,0,1:-1,1:-1].long(), start_dim=1)
             decoded_map_loss = F.cross_entropy(a,b)
 
-            pred = logits[:,9:-1,:]
+            context_len = context_emb.shape[1]
+            pred = potentials[:, context_len : context_len + num_predict, :]
 
-            loss_potential = F.mse_loss(pred,targets)
+            dist_to_dyn = torch.sqrt(
+                (x_crd.float() - dyn_x_crd.float()) ** 2
+                + (y_crd.float() - dyn_y_crd.float()) ** 2
+                + 1e-6
+            )  # (B,1)
+            near_obstacle_weight = 1.0 + self.near_obstacle_alpha * torch.exp(
+                -0.5 * (dist_to_dyn / self.near_obstacle_sigma) ** 2
+            )  # (B,1)
+            sq_err = (pred - targets) ** 2
+            loss_potential = (sq_err * near_obstacle_weight.unsqueeze(1)).mean()
             
             
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            potentials = torch.sigmoid(logits)
             loss_potential = None
             decoded_map_loss = None
 
-        return logits, loss_potential, decoded_map_loss
+        return potentials, loss_potential, decoded_map_loss
 
     
 
-    def forward(self, input_batch):
-
-
-        input_batch = input_batch.reshape(-1, 576*6+3) 
+    def forward(self, input_batch, future_steps: int = 10):
+        d = int(self.config.n_embd)
+        input_batch = input_batch.reshape(-1, d * 6 + 3)
         
-        encoded_input = input_batch[...,576*0:576*1]
-        map_encode_robot = input_batch[...,576*1:576*2]
-        dyn_x_cr_encode = input_batch[...,576*2:576*3]
-        dyn_y_cr_encode = input_batch[...,576*3:576*4]
-        dyn_t_encode_sin = input_batch[...,576*4:576*5]
-        dyn_t_encode_cos = input_batch[...,576*5:576*6]
-        x = input_batch[...,-3:-2]
-        y = input_batch[...,-2:-1]
-        theta = input_batch[...,-1:]
-
-        
+        encoded_input = input_batch[..., d * 0 : d * 1]
+        map_encode_robot = input_batch[..., d * 1 : d * 2]
+        dyn_x_cr_encode = input_batch[..., d * 2 : d * 3]
+        dyn_y_cr_encode = input_batch[..., d * 3 : d * 4]
+        dyn_t_encode_sin = input_batch[..., d * 4 : d * 5]
+        dyn_t_encode_cos = input_batch[..., d * 5 : d * 6]
+        x = input_batch[..., -3:-2]
+        y = input_batch[..., -2:-1]
+        theta = input_batch[..., -1:]
         
         x_emb = self.x_encode(x)
         y_emb = self.y_encode(y)
         theta_emb_sin = self.theta_encode_sin(torch.sin(theta))
         theta_emb_cos = self.theta_encode_cos(torch.cos(theta))
-
-        #final_tokens = [encoded_input, map_encode_robot, dyn_x_cr_encode, dyn_y_cr_encode, dyn_t_encode_sin, dyn_t_encode_cos ,x_emb, y_emb, theta_emb_sin, theta_emb_cos]
-
-        future_steps = 10
-        batch_size = input_batch.shape[0]
-        res_array = torch.zeros((batch_size, future_steps), device=input_batch.device)
+        (
+            x_emb,
+            y_emb,
+            theta_emb_sin,
+            theta_emb_cos,
+            dyn_x_cr_encode,
+            dyn_y_cr_encode,
+            dyn_t_encode_sin,
+            dyn_t_encode_cos,
+            relative_coord_token,
+        ) = self._coord_tokens_with_relative(
+            x_emb,
+            y_emb,
+            theta_emb_sin,
+            theta_emb_cos,
+            dyn_x_cr_encode,
+            dyn_y_cr_encode,
+            dyn_t_encode_sin,
+            dyn_t_encode_cos,
+        )
 
         tok_emb = torch.stack(
             (
@@ -288,29 +423,23 @@ class GPT(nn.Module):
                 y_emb,
                 theta_emb_sin,
                 theta_emb_cos,
+                relative_coord_token,
             ),
             dim=1,
         )
+        queries = self.query_embeds[:int(future_steps)].unsqueeze(0).expand(tok_emb.shape[0], -1, -1)
+        tok_emb = torch.cat((tok_emb, queries), dim=1)
 
-        
-        for step_i in range(future_steps):
-            
-    
-            pos = torch.arange(0, tok_emb.shape[1], dtype=torch.long, device=tok_emb.device)
-            pos_emb = self.transformer.wpe(pos)
-            x = self.transformer.drop(tok_emb + pos_emb)
-    
-            for block in self.transformer.h:
-                x = block(x)
-            x = self.transformer.ln_f(x) 
-            logits = self.lm_head(x)
+        pos = torch.arange(0, tok_emb.shape[1], dtype=torch.long, device=tok_emb.device)
+        pos_emb = self.transformer.wpe(pos)
+        x = self.transformer.drop(tok_emb + pos_emb)
+        for block in self.transformer.h:
+            x = block(x)
+        x = self.transformer.ln_f(x)
 
-            next_token = self.potential_encode(logits[:, -1, :])
-            tok_emb = torch.cat((tok_emb, next_token.unsqueeze(1)), dim=1)
-            res_array[:, step_i] = logits[:, -1, 0]
-
-
-        return res_array   
+        query_out = x[:, -int(future_steps):, :]
+        logits = self.lm_head(query_out)
+        return torch.sigmoid(logits).squeeze(-1)
 
 
     #@torch.jit.script
@@ -336,6 +465,7 @@ class GPT(nn.Module):
         encoded_input = self.transformer_map(encoded_input)
         encoded_input = self.decoder_pos(encoded_input)
         encoded_input = self.decoder(encoded_input).view(encoded_input.shape[0], -1)
+        encoded_input = self.map_proj(encoded_input)
 
         dyn_x_cr_encode = self.dyn_x_cord(dyn_x_crd)
         dyn_y_cr_encode = self.dyn_y_cord(dyn_y_crd)
@@ -349,32 +479,77 @@ class GPT(nn.Module):
 
     
     def encode_map_pos(self, encoded_input, map_encode_robot, dyn_x_cr_encode, dyn_y_cr_encode, dyn_t_encode_sin, dyn_t_encode_cos,x,y,theta):
+        if encoded_input.dim() == 1:
+            encoded_input = encoded_input.unsqueeze(0)
+            map_encode_robot = map_encode_robot.unsqueeze(0)
+            dyn_x_cr_encode = dyn_x_cr_encode.unsqueeze(0)
+            dyn_y_cr_encode = dyn_y_cr_encode.unsqueeze(0)
+            dyn_t_encode_sin = dyn_t_encode_sin.unsqueeze(0)
+            dyn_t_encode_cos = dyn_t_encode_cos.unsqueeze(0)
 
-        x_emb = self.x_encode(torch.tensor(x).unsqueeze(0).unsqueeze(0).to(self.device).float())
-        y_emb = self.y_encode(torch.tensor(y).unsqueeze(0).unsqueeze(0).to(self.device).float())
+        batch_size = encoded_input.shape[0]
+        x = torch.as_tensor(x, device=self.device, dtype=torch.float32).view(-1, 1)
+        y = torch.as_tensor(y, device=self.device, dtype=torch.float32).view(-1, 1)
+        theta = torch.as_tensor(theta, device=self.device, dtype=torch.float32).view(-1, 1)
+
+        if x.shape[0] == 1 and batch_size > 1:
+            x = x.expand(batch_size, -1)
+        if y.shape[0] == 1 and batch_size > 1:
+            y = y.expand(batch_size, -1)
+        if theta.shape[0] == 1 and batch_size > 1:
+            theta = theta.expand(batch_size, -1)
+
+        x_emb = self.x_encode(x)
+        y_emb = self.y_encode(y)
         theta_emb_sin = self.theta_encode_sin(torch.sin(theta))
         theta_emb_cos = self.theta_encode_cos(torch.cos(theta))
+        (
+            x_emb,
+            y_emb,
+            theta_emb_sin,
+            theta_emb_cos,
+            dyn_x_cr_encode,
+            dyn_y_cr_encode,
+            dyn_t_encode_sin,
+            dyn_t_encode_cos,
+            relative_coord_token,
+        ) = self._coord_tokens_with_relative(
+            x_emb,
+            y_emb,
+            theta_emb_sin,
+            theta_emb_cos,
+            dyn_x_cr_encode,
+            dyn_y_cr_encode,
+            dyn_t_encode_sin,
+            dyn_t_encode_cos,
+        )
 
-        final_tokens = [encoded_input, map_encode_robot, dyn_x_cr_encode, dyn_y_cr_encode, dyn_t_encode_sin, dyn_t_encode_cos ,x_emb, y_emb, theta_emb_sin, theta_emb_cos]
+        final_tokens = [
+            encoded_input,
+            map_encode_robot,
+            dyn_x_cr_encode,
+            dyn_y_cr_encode,
+            dyn_t_encode_sin,
+            dyn_t_encode_cos,
+            x_emb,
+            y_emb,
+            theta_emb_sin,
+            theta_emb_cos,
+            relative_coord_token,
+        ]
 
-        res_array = []
+        tok_emb = torch.stack(final_tokens, dim=1)
         future_steps = 10
-        
-        for step_i in range(future_steps):
-            tok_emb = torch.stack(final_tokens, dim=1)
-            pos = torch.arange(0, len(final_tokens), dtype=torch.long, device=self.device) # shape (t)
-            pos_emb = self.transformer.wpe(pos)
-            x = self.transformer.drop(tok_emb + pos_emb)
-            for block in self.transformer.h:
-                x = block(x)
-            x = self.transformer.ln_f(x) 
-            logits = self.lm_head(x)
-
-            final_tokens.append(self.potential_encode(torch.clone(logits[0,-1,0].detach()).unsqueeze(0).unsqueeze(0)))
-
-            res_array.append(logits[0,-1,0])
-
-        return torch.stack(res_array)
+        queries = self.query_embeds[:future_steps].unsqueeze(0).expand(batch_size, -1, -1)
+        tok_emb = torch.cat((tok_emb, queries), dim=1)
+        pos = torch.arange(0, tok_emb.shape[1], dtype=torch.long, device=self.device)
+        pos_emb = self.transformer.wpe(pos)
+        x = self.transformer.drop(tok_emb + pos_emb)
+        for block in self.transformer.h:
+            x = block(x)
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x[:, -future_steps:, :])
+        return torch.sigmoid(logits).squeeze(-1)
     
     
 

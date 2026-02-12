@@ -84,7 +84,6 @@ def robot_model(model_loaded, embedding_values):
 
     torch.cuda.empty_cache()
 
-    num_out_embeding = 3456
     num_prediction_steps_obst = TIME_STEPS
     t_update_dynamic_obst = OBSTACLE_PRED_DT
     cost_obst = MX.sym('cost_obst')
@@ -93,18 +92,25 @@ def robot_model(model_loaded, embedding_values):
     potential_l4c_at_embeding = MX.sym('pot')
     potential_l4c_at_embeding = l4c_model(vertcat(x, y, theta))
 
+    def _obstacle_potential_cost(step_idx: int):
+        # The new D3 model predicts normalized potential in [0,1].
+        # Keep it bounded and slightly sharpen high-risk regions.
+        raw = potential_l4c_at_embeding[step_idx]
+        raw = fmin(fmax(raw, 0.0), 1.0)
+        return raw + 0.5 * raw * raw
+
     # Evaluate predicted obstacle potentials on [0, TIME_STEPS * OBSTACLE_PRED_DT]
     # and hold the last prediction afterwards.
     max_t_pred = num_prediction_steps_obst * t_update_dynamic_obst
     t_point_clamped = fmin(fmax(t_point, 0), max_t_pred)
 
-    cost_obst = potential_l4c_at_embeding[num_prediction_steps_obst - 1][0]
+    cost_obst = _obstacle_potential_cost(num_prediction_steps_obst - 1)
    
     for j in range(num_prediction_steps_obst):
         cond_1 = t_point_clamped >= j * t_update_dynamic_obst
         cond_2 = t_point_clamped < ((j + 1) * t_update_dynamic_obst)
         cond_3 = logic_and(cond_1, cond_2)
-        cost_obst = if_else(cond_3, potential_l4c_at_embeding[j][0], cost_obst)
+        cost_obst = if_else(cond_3, _obstacle_potential_cost(j), cost_obst)
  
     model.cost_y_expr = vertcat(sym_x, sym_u , cost_obst)
     model.cost_y_expr_e = vertcat(sym_x, cost_obst)
