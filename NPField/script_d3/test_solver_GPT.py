@@ -1,6 +1,9 @@
 import argparse
+import csv
+import json
 import math
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -12,6 +15,7 @@ import pickle
 import torch
 from matplotlib import colors
 from math import cos, sin
+from scipy.ndimage import distance_transform_edt
 
 import create_solver_GPT as create_solver
 from generate_MPC_config import generate_config
@@ -172,7 +176,7 @@ def test_solver(
     t = time.perf_counter()
     status = 1
     max_attempts = 3
-    tf_growth_factors = (1.0, 2.0, 3.0)
+    tf_growth_factors = (1.0, 1.1, 0.9)
     goal_reach_tol_m = 0.18
     final_goal_error_m = float("inf")
     selected_tf = base_desired_tf
@@ -221,7 +225,7 @@ def test_solver(
         for i in range(N):
             candidate_simU[i, :] = acados_solver.get(i, "u")
         candidate_cost = float(acados_solver.get_cost())
-        candidate_key = (0 if status == 0 else 1, candidate_goal_error_m, candidate_cost)
+        candidate_key = (0 if candidate_goal_error_m < goal_reach_tol_m else 1, candidate_cost)
         if best_key is None or candidate_key < best_key:
             best_key = candidate_key
             best_candidate = {
@@ -775,11 +779,13 @@ def save_potential_gif(
     imageio.mimsave(str(output_path), frames, format="GIF", loop=0)
 
 
-def get_acados_solver(model_loaded, map_inp, cache_key):
+def get_acados_solver(model_loaded, map_inp, cache_key, allow_backward=False):
     if cache_key in _SOLVER_CACHE:
         return _SOLVER_CACHE[cache_key]
     embedding_values = compute_embedding(model_loaded, map_inp)
-    acados_solver = create_solver.create_solver(model_loaded, embedding_values)
+    acados_solver = create_solver.create_solver(
+        model_loaded, embedding_values, allow_backward=allow_backward
+    )
     _SOLVER_CACHE[cache_key] = acados_solver
     return acados_solver
 
@@ -800,7 +806,12 @@ def run_simulation(
     id_map=0,
     obst_initial_position=None,
     obstacle_traj=None,
+    save_gif=True,
+    interactive=True,
+    allow_backward=False,
 ):
+    t_total = time.perf_counter()
+
     id_dyn = 0
     if obst_initial_position is None:
         obst_initial_position = obst_motion_info[
@@ -822,13 +833,17 @@ def run_simulation(
             _MAP_INP_CACHE[cache_key] = map_inp
 
     if cache_key is not None:
-        acados_solver = get_acados_solver(model_loaded, map_inp, cache_key=cache_key)
+        acados_solver = get_acados_solver(
+            model_loaded, map_inp, cache_key=cache_key, allow_backward=allow_backward
+        )
     else:
         embedding_values = compute_embedding(model_loaded, map_inp)
-        acados_solver = create_solver.create_solver(model_loaded, embedding_values)
+        acados_solver = create_solver.create_solver(
+            model_loaded, embedding_values, allow_backward=allow_backward
+        )
 
     potential_frames = None
-    if save_potential_gif_flag:
+    if save_potential_gif_flag and save_gif:
         device = map_inp.device.type
         encoded = encode_map_for_potential(model_loaded, map_inp[0])
         potential_frames = infer_potential_grid(
@@ -839,10 +854,13 @@ def run_simulation(
             chunk_size=potential_chunk_size,
         )
 
-    cmap = colors.ListedColormap(["white", "black"])
-    fig, ax = plt.subplots(figsize=(5, 5))
-    ax.set_box_aspect(1)
-    ax.pcolor(map_data[num_map][0][::-1], cmap=cmap, edgecolors="w", linewidths=0.1)
+    if interactive:
+        cmap = colors.ListedColormap(["white", "black"])
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.set_box_aspect(1)
+        ax.pcolor(map_data[num_map][0][::-1], cmap=cmap, edgecolors="w", linewidths=0.1)
+    else:
+        fig, ax = plt.subplots(figsize=(1, 1))
 
     path_mpc, elapsed, ROB_x, ROB_y = test_solver(
         acados_solver,
@@ -855,38 +873,45 @@ def run_simulation(
         dyn_obst_info,
         obstacle_traj=obstacle_traj,
     )
+
+    total_elapsed_ms = 1000 * (time.perf_counter() - t_total)
     print(f"Trajectory time without solver init (ms): {elapsed:.2f}")
-    gif_generate(
-        path_mpc,
-        ROB_x,
-        ROB_y,
-        num_map,
-        id_map,
-        map_data,
-        dyn_obst_info,
-        output_dir,
-        x_ref_points,
-        y_ref_points,
-        obstacle_traj=obstacle_traj,
-        potential_frames=potential_frames,
-    )
-    if save_potential_gif_flag:
-        save_potential_gif(
-            map_data=map_data,
-            num_map=num_map,
-            id_map=id_map,
-            output_dir=output_dir,
+    print(f"Total planning time (ms): {total_elapsed_ms:.2f}")
+    plt.close(fig)
+
+    if save_gif:
+        gif_generate(
+            path_mpc,
+            ROB_x,
+            ROB_y,
+            num_map,
+            id_map,
+            map_data,
+            dyn_obst_info,
+            output_dir,
+            x_ref_points,
+            y_ref_points,
+            obstacle_traj=obstacle_traj,
             potential_frames=potential_frames,
         )
+        # if save_potential_gif_flag:
+        #     save_potential_gif(
+        #         map_data=map_data,
+        #         num_map=num_map,
+        #         id_map=id_map,
+        #         output_dir=output_dir,
+        #         potential_frames=potential_frames,
+        #     )
 
-    fig, ax2 = plt.subplots(1)
-    ax2.plot(path_mpc[:, 4], path_mpc[:, 2])
-    ax2.grid()
-    ax2.set_ylim([0, 1.1])
-    plt.setp(ax2, ylabel="v (m/sec)")
-    plt.show(block=False)
+    if interactive:
+        fig, ax2 = plt.subplots(1)
+        ax2.plot(path_mpc[:, 4], path_mpc[:, 2])
+        ax2.grid()
+        ax2.set_ylim([0, 1.1])
+        plt.setp(ax2, ylabel="v (m/sec)")
+        plt.show(block=False)
 
-    return path_mpc, elapsed
+    return path_mpc, elapsed, total_elapsed_ms
 
 
 def load_datasets(dataset_root):
@@ -983,6 +1008,318 @@ def load_model(checkpoint_path, device):
     return model_loaded
 
 
+def compute_trajectory_metrics(path_mpc, map_data, num_map, obstacle_traj, total_elapsed_ms, goal_xy=None):
+    """Compute evaluation metrics from Table 1 of the paper.
+
+    Metrics (all lower-is-better except safety_distance where higher is safer):
+        time_ms           – end-to-end planning time (encoding + MPC solve)
+        path_length_m     – Euclidean path length in metres
+        smoothness        – Σ(Δθ²) / path_length
+        aol               – Σ|Δθ| / path_length  (angle-over-length)
+        safety_distance_m – min SDF evaluated at robot footprint corners,
+                            also considering dynamic-obstacle proximity
+        goal_error_m      – Euclidean distance from final pose to goal
+        collision         – True if any footprint point penetrates obstacle
+        success           – True if no collision AND goal_error <= 0.18 m
+    """
+    N = path_mpc.shape[0] - 1
+    xs = path_mpc[:, 0] / MAP_SCALE
+    ys = path_mpc[:, 1] / MAP_SCALE
+    thetas = path_mpc[:, 3]
+    times = path_mpc[:, 4]
+
+    # AOL per bench-mr: sum absolute heading changes between consecutive
+    # path segments, normalized by path length, skipping duplicate points.
+    # https://github.com/robot-motion/bench-mr/blob/c10ef1c81afe80ad1f4f3a2cc4369dd6ef7bf844/src/metrics/AOLMetric.h#L21
+    points = np.column_stack((xs, ys))
+    filtered_points = [points[0]]
+    for p in points[1:]:
+        if np.hypot(p[0] - filtered_points[-1][0], p[1] - filtered_points[-1][1]) > 1e-9:
+            filtered_points.append(p)
+    filtered_points = np.array(filtered_points, dtype=float)
+
+    if filtered_points.shape[0] >= 2:
+        segments = np.sqrt(np.diff(filtered_points[:, 0]) ** 2 + np.diff(filtered_points[:, 1]) ** 2)
+        path_length = float(np.sum(segments))
+    else:
+        path_length = 0.0
+
+    if filtered_points.shape[0] >= 3:
+        seg_dx = np.diff(filtered_points[:, 0])
+        seg_dy = np.diff(filtered_points[:, 1])
+        yaws = np.arctan2(seg_dy, seg_dx)
+        dtheta = np.diff(yaws)
+        dtheta = (dtheta + np.pi) % (2 * np.pi) - np.pi
+    else:
+        dtheta = np.array([], dtype=float)
+
+    smoothness = float(np.sum(dtheta**2) / max(path_length, 1e-6))
+    aol = float(np.sum(np.abs(dtheta)) / max(path_length, 1e-6))
+
+    static_occ = map_data[num_map][0]
+    binary_occ = (static_occ > 50).astype(np.float64)
+    sdf_grid = distance_transform_edt(1 - binary_occ) * 0.1
+
+    fp_params = [
+        (0.6, -0.59), (0.6, 0.59), (-0.6, -0.59), (-0.6, 0.59),
+        (0.75, -0.16), (0.75, 0.16),
+    ]
+
+    min_safety = float("inf")
+    for k in range(N + 1):
+        rx, ry, rtheta = xs[k], ys[k], thetas[k]
+        t_val = times[k]
+
+        corners = [
+            (rx + r * cos(rtheta + a), ry + r * sin(rtheta + a))
+            for r, a in fp_params
+        ]
+        corners.append((rx, ry))
+
+        for cx, cy in corners:
+            gi = max(0, min(49, int(round((5 - cy) / 0.1))))
+            gj = max(0, min(49, int(round(cx / 0.1))))
+            min_safety = min(min_safety, sdf_grid[gi, gj])
+
+        obst_idx = min(int(max(t_val, 0.0) / OBSTACLE_PRED_DT), len(obstacle_traj) - 1)
+        ox, oy = obstacle_traj[obst_idx, 0], obstacle_traj[obst_idx, 1]
+        for cx, cy in corners:
+            d = math.sqrt((cx - ox) ** 2 + (cy - oy) ** 2) - OBSTACLE_FOOTPRINT_RADIUS
+            min_safety = min(min_safety, d)
+
+    collision = bool(min_safety <= 0)
+
+    if goal_xy is not None:
+        goal_error = math.hypot(xs[-1] - goal_xy[0], ys[-1] - goal_xy[1])
+    else:
+        goal_error = float("nan")
+
+    success = (not collision) and (goal_error <= 0.18)
+
+    return {
+        "time_ms": round(float(total_elapsed_ms), 2),
+        "path_length_m": round(float(path_length), 4),
+        "smoothness": round(float(smoothness), 6),
+        "aol": round(float(aol), 6),
+        "safety_distance_m": round(float(min_safety), 4),
+        "goal_error_m": round(float(goal_error), 4),
+        "collision": bool(collision),
+        "success": bool(success),
+    }
+
+
+def run_benchmark(
+    benchmark_json_path,
+    model_loaded,
+    map_data,
+    footprint,
+    dyn_obst_info,
+    obst_motion_info,
+    costmap,
+    output_dir,
+    save_potential_gif_flag=False,
+    potential_chunk_size=4096,
+    allow_backward=False,
+    benchmark_episode_id=None,
+):
+    # Ensure Tera renderer is available; if missing, auto-download without prompting (e.g. Docker / CI)
+    try:
+        from acados_template.utils import get_tera, get_tera_exec_path
+        tera_path = get_tera_exec_path()
+        if not (os.path.exists(tera_path) and os.access(tera_path, os.X_OK)):
+            get_tera(force_download=True)
+    except Exception as e:
+        print(f"Warning: could not pre-install Tera renderer: {e}")
+
+    with open(benchmark_json_path) as f:
+        benchmark = json.load(f)
+    scenarios = benchmark["scenarios"]
+    if benchmark_episode_id is not None:
+        scenarios = [s for s in scenarios if s.get("id") == benchmark_episode_id]
+        if not scenarios:
+            raise ValueError(
+                f"Episode ID {benchmark_episode_id} was not found in {benchmark_json_path}."
+            )
+        print(f"Filtering benchmark to a single episode: id={benchmark_episode_id}")
+    benchmark_output_dir = output_dir / "benchmark"
+    benchmark_output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = benchmark_output_dir / "benchmark_metrics.csv"
+    json_path = benchmark_output_dir / "benchmark_metrics.json"
+    print(f"\n=== Benchmark: {len(scenarios)} scenarios from {benchmark_json_path} ===\n")
+
+    csv_columns = [
+        "id",
+        "map_id",
+        "time_ms",
+        "path_length_m",
+        "smoothness",
+        "aol",
+        "safety_distance_m",
+        "goal_error_m",
+        "collision",
+        "success",
+        "status",
+        "error",
+    ]
+    numeric_cols = [
+        "time_ms", "path_length_m", "smoothness", "aol",
+        "safety_distance_m", "goal_error_m",
+    ]
+
+    results = []
+    completed = 0
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(csv_columns)
+        f.flush()
+        try:
+            for scenario in scenarios:
+                sid = scenario["id"]
+                map_id = scenario["map_id"]
+                x_path = scenario["x_path"]
+                y_path = scenario["y_path"]
+                theta_initial = scenario["theta_initial"]
+                obstacle_start = tuple(scenario["obstacle_start"])
+                obstacle_end = tuple(scenario["obstacle_end"])
+                obstacle_traj = build_obstacle_trajectory(
+                    (obstacle_start, obstacle_end), steps=TIME_STEPS
+                )
+
+                print(f"--- Scenario {sid} (map={map_id}) ---")
+                try:
+                    path_mpc, _solve_elapsed, total_elapsed = run_simulation(
+                        num_map=map_id,
+                        x_ref_points=x_path,
+                        y_ref_points=y_path,
+                        theta_0=theta_initial,
+                        obst_motion_info=obst_motion_info,
+                        map_data=map_data,
+                        footprint=footprint,
+                        model_loaded=model_loaded,
+                        dyn_obst_info=dyn_obst_info,
+                        output_dir=benchmark_output_dir,
+                        save_potential_gif_flag=save_potential_gif_flag,
+                        potential_chunk_size=potential_chunk_size,
+                        id_map=sid,
+                        obst_initial_position=obstacle_traj,
+                        obstacle_traj=obstacle_traj,
+                        save_gif=True,
+                        interactive=False,
+                        allow_backward=allow_backward,
+                    )
+                    goal_xy = (x_path[-1], y_path[-1])
+                    metrics = compute_trajectory_metrics(
+                        path_mpc, map_data, map_id, obstacle_traj, total_elapsed, goal_xy
+                    )
+                    metrics["scenario_id"] = sid
+                    metrics["map_id"] = map_id
+                    metrics["status"] = "ok"
+                    metrics["error"] = ""
+                except Exception as e:
+                    print(f"  FAILED: {e}")
+                    metrics = {
+                        "scenario_id": sid,
+                        "map_id": map_id,
+                        "status": "failed",
+                        "error": str(e),
+                        "time_ms": "",
+                        "path_length_m": "",
+                        "smoothness": "",
+                        "aol": "",
+                        "safety_distance_m": "",
+                        "goal_error_m": "",
+                        "collision": "",
+                        "success": False,
+                    }
+                results.append(metrics)
+                completed += 1
+                writer.writerow(
+                    [
+                        metrics["scenario_id"],
+                        metrics["map_id"],
+                        metrics["time_ms"],
+                        metrics["path_length_m"],
+                        metrics["smoothness"],
+                        metrics["aol"],
+                        metrics["safety_distance_m"],
+                        metrics["goal_error_m"],
+                        metrics["collision"],
+                        metrics["success"],
+                        metrics["status"],
+                        metrics["error"],
+                    ]
+                )
+                # Persist partial benchmark table even for very long runs.
+                f.flush()
+        except KeyboardInterrupt:
+            print("\nBenchmark interrupted by user. Partial CSV and JSON were saved.")
+
+        evaluated = [r for r in results if r.get("status") == "ok"]
+        successful = [r for r in evaluated if r.get("success", False)]
+        n_eval = len(evaluated)
+        n_success_for_avg = len(successful)
+        if n_success_for_avg > 0:
+            avg_row = [
+                "AVERAGE (successful only)",
+                "",
+                round(np.mean([r["time_ms"] for r in successful]), 2),
+                round(np.mean([r["path_length_m"] for r in successful]), 4),
+                round(np.mean([r["smoothness"] for r in successful]), 6),
+                round(np.mean([r["aol"] for r in successful]), 6),
+                round(np.mean([r["safety_distance_m"] for r in successful]), 4),
+                round(np.mean([r["goal_error_m"] for r in successful]), 4),
+                0,  # no collisions in successful episodes
+                f"{n_success_for_avg}/{n_eval}",
+                "summary",
+                "",
+            ]
+            writer.writerow(avg_row)
+            f.flush()
+
+    def _to_serializable(obj):
+        """Convert numpy/types to native Python for JSON."""
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, dict):
+            return {k: _to_serializable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_to_serializable(v) for v in obj]
+        return obj
+
+    with open(json_path, "w") as f:
+        json.dump(
+            {
+                "num_scenarios": len(scenarios),
+                "num_completed": completed,
+                "per_scenario": [_to_serializable(r) for r in results],
+            },
+            f,
+            indent=2,
+        )
+
+    n_success = sum(1 for r in results if r.get("success", False))
+    n_collision = sum(1 for r in results if r.get("collision", False))
+    print(f"\n{'='*60}")
+    print(f"Benchmark complete: {completed}/{len(scenarios)} scenarios evaluated")
+    print(f"  Success rate: {n_success}/{len(results)}")
+    print(f"  Collisions:   {n_collision}/{len(results)}")
+    if successful:
+        print(f"{'='*60}")
+        print(f"  {'Metric':<22s} {'Mean (successful only)':>22s}")
+        print(f"  {'-'*22} {'-'*22}")
+        for col in numeric_cols:
+            vals = [r[col] for r in successful]
+            print(f"  {col:<22s} {np.mean(vals):>22.4f}")
+    print(f"\nCSV saved to {csv_path}")
+    print(f"JSON saved to {json_path}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run NPField solver.")
     parser.add_argument("--map-id", type=int, default=3, help="Map index to use.")
@@ -1019,6 +1356,23 @@ def parse_args():
         default="",
         help="Optional path to a finetuned D3 checkpoint; overrides NPFIELD_CHECKPOINT.",
     )
+    parser.add_argument(
+        "--benchmark-json",
+        type=str,
+        default="",
+        help="Path to JSON file with benchmark scenarios. Runs all scenarios and saves metrics.",
+    )
+    parser.add_argument(
+        "--benchmark-episode-id",
+        type=int,
+        default=None,
+        help="Run only a single benchmark episode by scenario id (e.g. 51).",
+    )
+    parser.add_argument(
+        "--allow-backward",
+        action="store_true",
+        help="Allow negative velocity (backward motion) in MPC trajectory planning.",
+    )
     return parser.parse_args()
 
 
@@ -1029,10 +1383,25 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_loaded = load_model(checkpoint_path, device)
 
+    if args.benchmark_json:
+        run_benchmark(
+            benchmark_json_path=args.benchmark_json,
+            model_loaded=model_loaded,
+            map_data=map_data,
+            footprint=footprint,
+            dyn_obst_info=dyn_obst_info,
+            obst_motion_info=obst_motion_info,
+            costmap=costmap,
+            output_dir=output_dir,
+            save_potential_gif_flag=args.save_potential_gif,
+            potential_chunk_size=args.potential_chunk_size,
+            allow_backward=args.allow_backward,
+            benchmark_episode_id=args.benchmark_episode_id,
+        )
+        return
+
     if args.test_episode:
-        # Copy map tensor to keep deterministic test obstacle local to this run.
         map_data = np.array(map_data, copy=True)
-        # add_static_circle_obstacle(map_data, args.map_id, center=(2.5, 2.5), radius=0.2)
         x_ref_points, y_ref_points, theta_0, obstacle_traj = build_test_episode_config()
         print("Running deterministic --test-episode scenario.")
 
@@ -1062,6 +1431,8 @@ def main():
             id_map=i,
             obst_initial_position=obstacle_traj,
             obstacle_traj=obstacle_traj,
+            save_gif=True,
+            allow_backward=args.allow_backward,
         )
 
 

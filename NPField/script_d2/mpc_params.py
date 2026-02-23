@@ -43,17 +43,17 @@ CTRL_T_MAX = 10.0
 W_X = 0.1
 W_Y = 0.1
 W_V = 0.05
-W_THETA = 0.1
-W_TIME = 0.01
-W_A = 0.01
-W_W = 0.005
-W_T = 0.01
+W_THETA = 0.15
+W_TIME = 0.05
+W_A = 0.02
+W_W = 0.02
+W_T = 0.04
 W_OBST = 300.0
 
 W_X_E = 30.0
 W_Y_E = 30.0
 W_V_E = 0.001
-W_THETA_E = 0.01
+W_THETA_E = 0.05
 W_TIME_E = 0.01
 
 # Solver settings
@@ -67,9 +67,9 @@ LM_DAMPING = 3.0
 QP_COND_N = 10
 
 # Time allocation robustness for finite horizon
-TF_TIME_SLACK = 1.25
+TF_TIME_SLACK = 1.15
 TF_TURN_WEIGHT = 1.0
-TF_MIN_BUFFER_SEC = 1.0
+TF_MIN_BUFFER_SEC = 0.6
 
 # Geometry settings used in environment/plot overlays
 OBSTACLE_FOOTPRINT_RADIUS = 0.291

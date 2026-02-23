@@ -42,13 +42,13 @@ CTRL_T_MAX = 10.0
 # Cost weights
 W_X = 0.1
 W_Y = 0.1
-W_V = 0.05
-W_THETA = 0.1
-W_TIME = 0.01
+W_V = 0.4                     # 0.05      # 0.15
+W_THETA = 0.005                   # 0.1  0.3
+W_TIME = 0.01 
 W_A = 0.01
-W_W = 0.005
+W_W = 0.005                      # 0.005       # 0.1
 W_T = 0.01
-W_OBST = 300.0
+W_OBST = 5.0
 
 W_X_E = 30.0
 W_Y_E = 30.0
@@ -57,7 +57,7 @@ W_THETA_E = 0.01
 W_TIME_E = 0.01
 
 # Solver settings
-NLP_MAX_ITER = 80
+NLP_MAX_ITER = 50
 QP_MAX_ITER = 100
 NLP_TOL_STAT = 1e-4
 NLP_TOL_EQ = 1e-4

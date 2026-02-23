@@ -40,7 +40,7 @@ from mpc_params import (
     W_Y_E,
 )
 
-def create_solver(model_loaded, embedding_values):
+def create_solver(model_loaded, embedding_values, allow_backward=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_loaded.to(device)
     model, l4c_model = robot_model(model_loaded, embedding_values)
@@ -48,7 +48,7 @@ def create_solver(model_loaded, embedding_values):
     # acados OCP handle
     ocp = AcadosOcp()
     N = N_HORIZON
-    ocp.dims.N = N
+    ocp.solver_options.N_horizon = N
 
     # OCP dimensions
     nx = MPC_NX
@@ -73,8 +73,12 @@ def create_solver(model_loaded, embedding_values):
     ocp.cost.yref = np.zeros([ny + 1])
     ocp.cost.yref_e = np.zeros([nx + 1])
 
+    lbx = np.array(STATE_LBX, dtype=float)
+    if allow_backward:
+        from mpc_params import V_MAX
+        lbx[2] = -V_MAX
     ocp.constraints.idxbx = np.array([0, 1, 2, 3, 4])
-    ocp.constraints.lbx = np.array(STATE_LBX)
+    ocp.constraints.lbx = lbx
     ocp.constraints.ubx = np.array(STATE_UBX)
     ocp.constraints.idxbu = np.array([0, 1, 2])
     ocp.constraints.lbu = np.array([CTRL_A_MIN, CTRL_W_MIN, CTRL_T_MIN])

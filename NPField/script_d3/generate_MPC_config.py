@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import random
 from math import atan2, sqrt
@@ -356,6 +357,48 @@ def _plot_config(map_data, num_map, agent_path, obstacle_path, output_path):
     plt.close(fig)
 
 
+def _generate_benchmark_configs(costmaps, n_configs=100, easy_config=False):
+    configs = []
+    max_attempts = n_configs * 50
+    attempts = 0
+    while len(configs) < n_configs and attempts < max_attempts:
+        attempts += 1
+        num_map = random.randint(0, len(costmaps) - 1)
+        num_orientation = random.randint(0, 2)
+        try:
+            x_path, y_path, theta_initial, obstacle_path = generate_config(
+                costmaps,
+                num_map,
+                num_orientation,
+                return_obstacle=True,
+                easy_config=easy_config,
+            )
+        except RuntimeError:
+            continue
+        config = {
+            "id": len(configs),
+            "map_id": int(num_map),
+            "num_orientation": int(num_orientation),
+            "x_path": [float(x_path[0]), float(x_path[1])],
+            "y_path": [float(y_path[0]), float(y_path[1])],
+            "theta_initial": float(theta_initial),
+            "obstacle_start": [float(obstacle_path[0][0]), float(obstacle_path[0][1])],
+            "obstacle_end": [float(obstacle_path[1][0]), float(obstacle_path[1][1])],
+        }
+        configs.append(config)
+        print(f"Generated config {len(configs)}/{n_configs} (map={num_map}, orient={num_orientation})")
+    if len(configs) < n_configs:
+        print(f"WARNING: Only generated {len(configs)}/{n_configs} configs after {attempts} attempts.")
+    return configs
+
+
+def _save_configs_json(configs, output_path):
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump({"num_scenarios": len(configs), "scenarios": configs}, f, indent=2)
+    print(f"Saved {len(configs)} scenarios to {output_path}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate MPC configs with obstacle crossings.")
     parser.add_argument("--num-configs", "-n", type=int, default=1, help="Number of configs to generate.")
@@ -364,6 +407,23 @@ def parse_args():
         action="store_true",
         help="Use easier deterministic agent start/goal pairs when possible.",
     )
+    parser.add_argument(
+        "--save-json",
+        action="store_true",
+        help="Save valid configs to a JSON file instead of plotting.",
+    )
+    parser.add_argument(
+        "--json-output",
+        type=str,
+        default="",
+        help="Output path for JSON configs (default: <output_dir>/benchmark_scenarios.json).",
+    )
+    parser.add_argument(
+        "--num-scenarios",
+        type=int,
+        default=100,
+        help="Number of valid scenarios to generate when using --save-json.",
+    )
     return parser.parse_args()
 
 
@@ -371,6 +431,14 @@ def main():
     args = parse_args()
     dataset_root, output_dir = _resolve_paths()
     map_data, costmaps = _load_datasets(dataset_root)
+
+    if args.save_json:
+        json_output = args.json_output or str(output_dir / "benchmark_scenarios.json")
+        configs = _generate_benchmark_configs(
+            costmaps, n_configs=args.num_scenarios, easy_config=args.easy_config
+        )
+        _save_configs_json(configs, json_output)
+        return
 
     created = 0
     attempts = 0

@@ -23,21 +23,21 @@ We address local trajectory planning for a mobile robot in the presence of stati
 
 1. **Clone the Repository:**
    Begin by cloning the repository containing the Dockerfile to your local machine.
-   ```bash
+```bash
    git clone https://github.com/CognitiveAISystems/Dynamic-Neural-Potential-Field
    cd Dynamic-Neural-Potential-Field
    ```
 
 2. **Build the Docker Image:**
    Use the following command to build the Docker image from the Dockerfile in your repository.
-   ```bash
+```bash
     docker build -t dyn_npfield .
    ```
 
 3. **Run the Docker Container:**
    After building the image, run a container from it. The following commands will first remove any existing container named `dyn_npfield`, then start a new one with the specified options. The `NPField` directory is mounted from your host into the container (instead of being copied):
 
-   ```bash
+```bash
    docker rm -f dyn_npfield
 
    docker run -it --gpus all --name dyn_npfield -p 80:80 \
@@ -50,14 +50,14 @@ We address local trajectory planning for a mobile robot in the presence of stati
 
 4. **Accessing the Container:**
    You can access the running container via:
-   ```bash
+```bash
     docker exec -it dyn_npfield /bin/bash
    ```
    This will open a bash shell inside the container where you can interact with the software and run commands.
 
 5. **Example Run:**
    Inside the container, run the following command to generate the default example GIF:
-   ```bash
+```bash
    export NPFIELD_DATASET_DIR=/app/NPField/dataset/dataset1000
    python NPField/script_d3/NPField_model_GPT.py --finetune-checkpoint /app/NPField/dataset/trained-models/NPField_D3_finetune.pth
    ```
@@ -72,7 +72,7 @@ We address local trajectory planning for a mobile robot in the presence of stati
    Output GIFs are written to `NPField/output` with names like `NPField_D3_ep{episode}_dyn{id_dyn}_angle_{angle}deg.gif`.
 
 6. **Train D3 (new model/checkpoint):**
-   ```bash
+```bash
    export NPFIELD_DATASET_DIR=/app/NPField/dataset/dataset1000 && python NPField/script_d3/train_model.py \
      --epochs 10 \
      --lr 5e-5 \
@@ -88,12 +88,39 @@ We address local trajectory planning for a mobile robot in the presence of stati
    ```
 
 7. **Test D3 trajectory with the finetuned checkpoint:**
-   ```bash
+```bash
    python NPField/script_d3/test_solver_GPT.py \
-     --map-id 3 \
+     --map-id 993 \
      --episodes 10 \
      --finetune-checkpoint /app/NPField/dataset/trained-models/NPField_D3_finetune.pth \
      --save-potential-gif
+
+   python NPField/script_d2/test_solver.py \
+     --map-id 993 \
+     --episodes 10 \
+     --save-potential-gif
+   ```
+
+8. **Generate 100 benchmark configs and Evaluate all scenarios**
+```bash
+   # Step 1: 
+   cd NPField/config
+   python generate_MPC_config.py --save-json --num-scenarios 100
+
+   # Step 2: 
+   cd NPField/script_d3
+   python test_solver_GPT.py \
+      --benchmark-json ../output/benchmark_scenarios.json \
+      --finetune-checkpoint /app/NPField/dataset/trained-models/NPField_D3_finetune.pth \
+      --save-potential-gif \
+      --allow-backward
+
+   cd NPField/script_d2
+   python test_solver.py \
+      --benchmark-json ../output/benchmark_scenarios.json \
+      --save-potential-gif \
+      --allow-backward
+
    ```
 
 #### Troubleshooting:
