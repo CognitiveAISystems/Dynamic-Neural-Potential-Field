@@ -22,6 +22,10 @@ OBSTACLE_PRED_DT = 0.8  # seconds between NN obstacle predictions
 OBSTACLE_SPEED_MPS = 0.3  # dynamic obstacle speed (m/s)
 OBSTACLE_STEP_M = OBSTACLE_SPEED_MPS * OBSTACLE_PRED_DT
 
+# D1-internal: time between static-frame embedding switches in the robot model.
+# The pre-computed sub-maps were generated with this cadence.
+NN_FRAME_DT = 0.5
+
 # MPC model dimensions
 MPC_NX = 5
 MPC_NU = 3
@@ -42,22 +46,22 @@ CTRL_T_MAX = 10.0
 # Cost weights
 W_X = 0.1
 W_Y = 0.1
-W_V = 0.05
-W_THETA = 0.15
-W_TIME = 0.05
-W_A = 0.02
-W_W = 0.02
-W_T = 0.04
-W_OBST = 300.0
+W_V = 0.05                     # 0.05      # 0.15
+W_THETA = 0.005                   # 0.1  0.3
+W_TIME = 0.01 
+W_A = 0.01
+W_W = 0.005                      # 0.005       # 0.1
+W_T = 0.01
+W_OBST = 5.0
 
 W_X_E = 30.0
 W_Y_E = 30.0
 W_V_E = 0.001
-W_THETA_E = 0.05
+W_THETA_E = 0.01
 W_TIME_E = 0.01
 
 # Solver settings
-NLP_MAX_ITER = 80
+NLP_MAX_ITER = 120
 QP_MAX_ITER = 100
 NLP_TOL_STAT = 1e-4
 NLP_TOL_EQ = 1e-4
@@ -67,9 +71,9 @@ LM_DAMPING = 3.0
 QP_COND_N = 10
 
 # Time allocation robustness for finite horizon
-TF_TIME_SLACK = 1.15
+TF_TIME_SLACK = 1.25
 TF_TURN_WEIGHT = 1.0
-TF_MIN_BUFFER_SEC = 0.6
+TF_MIN_BUFFER_SEC = 1.0
 
 # Geometry settings used in environment/plot overlays
 OBSTACLE_FOOTPRINT_RADIUS = 0.291

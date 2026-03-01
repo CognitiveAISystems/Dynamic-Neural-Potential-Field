@@ -14,6 +14,7 @@ import numpy as np
 import pickle
 import torch
 from matplotlib import colors
+from matplotlib.path import Path as MplPath
 from math import cos, sin
 from scipy.ndimage import distance_transform_edt
 
@@ -176,7 +177,7 @@ def test_solver(
     t = time.perf_counter()
     status = 1
     max_attempts = 3
-    tf_growth_factors = (1.0, 1.1, 0.9)
+    tf_growth_factors = (1.1, 0.9)
     goal_reach_tol_m = 0.18
     final_goal_error_m = float("inf")
     selected_tf = base_desired_tf
@@ -561,12 +562,17 @@ def gif_generate(
     OBST_y[2] = y_obst - OBSTACLE_FOOTPRINT_RADIUS * sin(theta_obst - OBSTACLE_FOOTPRINT_ANGLE)
     OBST_y[3] = y_obst - OBSTACLE_FOOTPRINT_RADIUS * sin(theta_obst + OBSTACLE_FOOTPRINT_ANGLE)
     total_time = max(15.0, float(path[-1, 4]))
-    map_h, map_w = map_data[num_map][0].shape
+    if obstacle_traj is not None:
+        bg_map = _draw_obstacle_on_map(
+            map_data[num_map][0],
+            obstacle_traj[0, 0], obstacle_traj[0, 1], obstacle_traj[0, 2],
+        )
+    else:
+        bg_map = map_data[num_map][0]
+    map_h, map_w = bg_map.shape
     for i in np.arange(0.0, total_time + 1e-6, 0.05):
         fig2, ax2 = plt.subplots(1, 1, figsize=(5, 5))
         if potential_frames is not None:
-            # Keep the NN potential-map timing consistent with robot_model:
-            # each prediction slice is active for one OBSTACLE_PRED_DT bin.
             pred_idx = min(int(max(i, 0.0) / OBSTACLE_PRED_DT), TIME_STEPS - 1)
             ax2.imshow(
                 potential_frames[pred_idx].T,
@@ -577,14 +583,14 @@ def gif_generate(
                 interpolation="nearest",
             )
             ax2.pcolor(
-                map_data[num_map][0][::-1],
+                bg_map[::-1],
                 cmap=colors.ListedColormap(["white", "black"]),
                 edgecolors="none",
                 alpha=0.12,
             )
         else:
             cmap = colors.ListedColormap(["white", "black"])
-            ax2.pcolor(map_data[num_map][0][::-1], cmap=cmap, edgecolors="w", linewidths=0.1)
+            ax2.pcolor(bg_map[::-1], cmap=cmap, edgecolors="w", linewidths=0.1)
         ax2.plot(robot_path_x, robot_path_y, color="r", linewidth=1)
         # Show configured start/goal from generate_config, not optimized endpoints.
         ax2.plot(cfg_start_x, cfg_start_y, marker="x", color="r", markersize=6)
@@ -642,6 +648,39 @@ def gif_generate(
     imageio.mimsave(str(output_path), frames, format="GIF", fps=20)
 
 
+def _draw_obstacle_on_map(base_map, x_obst, y_obst, theta_obst):
+    """Render the obstacle footprint onto a copy of the 50x50 base map.
+
+    Grid mapping: col = x / 0.1, row = (5 - y) / 0.1.
+    Occupied cells are set to 100.
+    """
+    modified = base_map.copy().astype(float)
+    R = OBSTACLE_FOOTPRINT_RADIUS
+    A = OBSTACLE_FOOTPRINT_ANGLE
+
+    corners_world = np.array([
+        [x_obst + R * cos(theta_obst - A), y_obst + R * sin(theta_obst - A)],
+        [x_obst + R * cos(theta_obst + A), y_obst + R * sin(theta_obst + A)],
+        [x_obst - R * cos(theta_obst - A), y_obst - R * sin(theta_obst - A)],
+        [x_obst - R * cos(theta_obst + A), y_obst - R * sin(theta_obst + A)],
+    ])
+
+    grid_col = corners_world[:, 0] * 10.0
+    grid_row = (5.0 - corners_world[:, 1]) * 10.0
+    verts = np.column_stack((grid_col, grid_row))
+    verts = np.vstack([verts, verts[:1]])
+    poly = MplPath(verts)
+
+    cols_g, rows_g = np.meshgrid(
+        np.arange(50, dtype=float) + 0.5,
+        np.arange(50, dtype=float) + 0.5,
+    )
+    pts = np.column_stack((cols_g.ravel(), rows_g.ravel()))
+    mask = poly.contains_points(pts).reshape(50, 50)
+    modified[mask] = 100.0
+    return modified
+
+
 def fill_map_inp(
     num_map,
     map_data,
@@ -650,22 +689,22 @@ def fill_map_inp(
     use_static_base=False,
 ):
     map_inp = torch.zeros((TIME_STEPS, 5003))
-    k = 0
-    for n in range(TIME_STEPS):
-        layer_idx = 0 if use_static_base else (n + 1)
-        for i in range(50):
-            for j in range(50):
-                map_inp[n][k] = map_data[num_map][layer_idx][i, j]
-                k = k + 1
-        k = 0
+    fp_flat = torch.tensor(footprint.flatten(), dtype=torch.float32)
 
-    k = 0
     for n in range(TIME_STEPS):
-        for i in range(50):
-            for j in range(50):
-                map_inp[n][2500 + k] = footprint[i, j]
-                k = k + 1
-        k = 0
+        if use_static_base:
+            frame = _draw_obstacle_on_map(
+                map_data[num_map][0],
+                obst_initial_position[n][0],
+                obst_initial_position[n][1],
+                obst_initial_position[n][2],
+            )
+            map_inp[n, :2500] = torch.tensor(frame.flatten(), dtype=torch.float32)
+        else:
+            map_inp[n, :2500] = torch.tensor(
+                map_data[num_map][n + 1].flatten(), dtype=torch.float32,
+            )
+        map_inp[n, 2500:5000] = fp_flat
 
     map_inp[:, :5000] /= 100.0
     for i in range(TIME_STEPS):

@@ -42,7 +42,7 @@ CTRL_T_MAX = 10.0
 # Cost weights
 W_X = 0.1
 W_Y = 0.1
-W_V = 0.4                     # 0.05      # 0.15
+W_V = 0.05                     # 0.05      # 0.15
 W_THETA = 0.005                   # 0.1  0.3
 W_TIME = 0.01 
 W_A = 0.01

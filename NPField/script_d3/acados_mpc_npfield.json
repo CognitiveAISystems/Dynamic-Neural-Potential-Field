@@ -194,7 +194,7 @@
             [
                 0.0,
                 0.0,
-                0.4,
+                0.05,
                 0.0,
                 0.0,
                 0.0,
@@ -295,7 +295,7 @@
             [
                 0.0,
                 0.0,
-                0.4,
+                0.05,
                 0.0,
                 0.0,
                 0.0,
@@ -545,7 +545,7 @@
         "robot_model_cost/robot_model_cost_y_e_fun_jac_ut_xt.c",
         "robot_model_cost/robot_model_cost_y_e_hess.c"
     ],
-    "hash": "8bba4f0b3fd8554b28973897d1aad80c",
+    "hash": "1ff6394ea514f4442dd668a9bb4d1524",
     "model": {
         "con_h_expr": [],
         "con_h_expr_0": [],

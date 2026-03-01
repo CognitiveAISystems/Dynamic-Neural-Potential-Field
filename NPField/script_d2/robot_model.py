@@ -1,26 +1,8 @@
-from acados_template import AcadosOcp, AcadosOcpSolver, AcadosModel
+from acados_template import AcadosModel
 import l4casadi as l4c
-from model_nn import Autoencoder_path
 import torch
 
-from casadi import (
-    SX,
-    vertcat,
-    sin,
-    cos,
-    tan,
-    exp,
-    if_else,
-    pi,
-    atan,
-    logic_and,
-    sqrt,
-    fabs,
-    atan2,
-    MX,
-    fmin,
-    fmax,
-)
+from casadi import vertcat, cos, sin, if_else, logic_and, MX, fmin, fmax
 from mpc_params import TIME_STEPS, OBSTACLE_PRED_DT
 
     
@@ -83,26 +65,18 @@ def robot_model(model_loaded, embedding_values):
 
     torch.cuda.empty_cache()
 
-    num_out_embeding = 676
-    num_prediction_steps_obst = TIME_STEPS
-    t_update_dynamic_obst = OBSTACLE_PRED_DT
-    cost_obst = MX.sym('cost_obst')
+    potential_all = l4c_model(vertcat(x, y, theta))
 
-    potential_l4c_at_embeding = MX.sym('pot')
-    potential_l4c_at_embeding = l4c_model(vertcat(x, y, theta))
+    max_t_pred = TIME_STEPS * OBSTACLE_PRED_DT
+    t_clamped = fmin(fmax(t_point, 0), max_t_pred)
 
-    # Evaluate predicted obstacle potentials on [0, TIME_STEPS * OBSTACLE_PRED_DT]
-    # and hold the last prediction afterwards.
-    max_t_pred = num_prediction_steps_obst * t_update_dynamic_obst
-    t_point_clamped = fmin(fmax(t_point, 0), max_t_pred)
-
-    cost_obst = potential_l4c_at_embeding[num_prediction_steps_obst - 1][0]
-   
-    for j in range(num_prediction_steps_obst):
-        cond_1 = t_point_clamped >= j * t_update_dynamic_obst
-        cond_2 = t_point_clamped < ((j + 1) * t_update_dynamic_obst)
-        cond_3 = logic_and(cond_1, cond_2)
-        cost_obst = if_else(cond_3, potential_l4c_at_embeding[j][0], cost_obst)
+    cost_obst = potential_all[TIME_STEPS - 1]
+    for j in range(TIME_STEPS):
+        cond = logic_and(
+            t_clamped >= j * OBSTACLE_PRED_DT,
+            t_clamped < (j + 1) * OBSTACLE_PRED_DT,
+        )
+        cost_obst = if_else(cond, potential_all[j], cost_obst)
  
     model.cost_y_expr = vertcat(sym_x, sym_u , cost_obst)
     model.cost_y_expr_e = vertcat(sym_x, cost_obst)

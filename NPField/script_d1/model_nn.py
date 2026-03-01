@@ -1,32 +1,17 @@
-import pickle
 import sys
 import os
 
-# Append the path to the TransPath folder to sys.path
-script_dir = os.path.dirname(__file__)  
-project_dir = os.path.dirname(script_dir)  
-transpath_dir = os.path.join(project_dir, 'TransPath')  # Path to the TransPath directory
+script_dir = os.path.dirname(__file__)
+project_dir = os.path.dirname(script_dir)
+transpath_dir = os.path.join(project_dir, "TransPath")
 sys.path.append(transpath_dir)
-
-from math import floor
-import matplotlib.pyplot as plt
-import numpy as np
 
 import torch
 import torch.nn as nn
-
 from modules.attention import SpatialTransformer
 from modules.decoder import Decoder
 from modules.encoder import Encoder
 from modules.pos_emb import PosEmbeds
-
-from casadi import vertcat , DM
-import l4casadi as l4c
-import imageio
-
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:5000"
-def base_loss(criterion, na_outputs, va_outputs):
-    return criterion(na_outputs.histories, va_outputs.paths)
 
 
 def adv_loss(criterion, na_outputs, va_outputs):
@@ -45,6 +30,14 @@ def adv_loss(criterion, na_outputs, va_outputs):
 
 
 class Autoencoder_path(nn.Module):
+    """D1 Static-MLP potential field model.
+
+    Embedding input  : 5000 (2500 map + 2500 footprint)
+    Embedding output : 612  (576 decoder + 36 robot encoder)
+    MLP input        : 615  (612 embedding + x + y + theta)
+    MLP output       : 1    (scalar potential)
+    """
+
     def __init__(
         self,
         in_channels=2,
@@ -66,7 +59,7 @@ class Autoencoder_path(nn.Module):
             1, hidden_channels, downsample_steps, cnn_dropout, num_groups=32
         )
         self.encoder_robot = Encoder(1, 1, 3, 0.15, num_groups=1)
-        
+
         self.pos = PosEmbeds(
             hidden_channels,
             (
@@ -84,7 +77,7 @@ class Autoencoder_path(nn.Module):
                 resolution[1] // 2**downsample_steps,
             ),
         )
-        self.decoder = Decoder(hidden_channels, out_channels//2, 1, cnn_dropout)           ####### out_channels
+        self.decoder = Decoder(hidden_channels, out_channels // 2, 1, cnn_dropout)
 
         self.x_cord = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
         self.y_cord = nn.Sequential(nn.Linear(1, 16), nn.ReLU())
@@ -93,24 +86,11 @@ class Autoencoder_path(nn.Module):
 
         self.encoder_after = Encoder(hidden_channels, 32, 1, 0.15, num_groups=32)
         self.decoder_after = Decoder(32, hidden_channels, 1, 0.15, num_groups=32)
-        
+
         self.decoder_MAP = Decoder(hidden_channels, 2, 3, 0.15, num_groups=32)
-        
-        """
+
         self.linear_after_mean = nn.Sequential(
-            nn.Linear(1225, 256),
-            nn.ReLU(),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            #nn.Sigmoid(),
-        )
-        """
-        
-        self.linear_after_mean = nn.Sequential(
-            nn.Linear(676, 256),                       # 1225
+            nn.Linear(676, 256),
             nn.GELU(),
             nn.Linear(256, 128),
             nn.GELU(),
@@ -125,7 +105,6 @@ class Autoencoder_path(nn.Module):
         self.k = 1
         self.automatic_optimization = False
         self.device = torch.device("cuda")
-        # self.save_hyperparameters()
 
     def forward(self, batch):
         batch = batch.reshape(-1, 615)
@@ -144,13 +123,12 @@ class Autoencoder_path(nn.Module):
         encoded_input = torch.cat(
             (map_encode_robot, x_cr_encode, y_cr_encode, tsin_encode, tcos_encode), 1
         )
-        # encoded_input = self.linear_after(encoded_input)
-        #encoded_input_max = self.linear_after_max(encoded_input)
         encoded_input_mean = self.linear_after_mean(encoded_input)
 
         return encoded_input_mean
 
     def encode_map_footprint(self, batch):
+        """Encode a 5000-element (map + footprint) input into a 612-dim embedding."""
         mapp = batch[..., :2500].to(self.device)
         mapp = torch.reshape(mapp, (-1, 1, 50, 50))
 
@@ -175,6 +153,7 @@ class Autoencoder_path(nn.Module):
         return encoded_input
 
     def encode_map_pos(self, batch):
+        """Evaluate potential from a 615-element (embedding + x + y + theta) input."""
         batch = batch.reshape(-1, 615)
 
         map_encode_robot = batch[..., :-3].to(self.device)
@@ -191,58 +170,10 @@ class Autoencoder_path(nn.Module):
         encoded_input = torch.cat(
             (map_encode_robot, x_cr_encode, y_cr_encode, tsin_encode, tcos_encode), 1
         )
-        # encoded_input = self.linear_after(encoded_input)
-        #encoded_input_max = self.linear_after_max(encoded_input)
         encoded_input_mean = self.linear_after_mean(encoded_input)
 
         return encoded_input_mean
-    def encode_map_footprint(self, batch):
-        mapp = batch[..., :2500].to(self.device)
-        mapp = torch.reshape(mapp, (-1, 1, 50, 50))
 
-        footprint = batch[..., 2500:].to(self.device)
-        footprint = torch.reshape(footprint, (-1, 1, 50, 50))
-
-        map_encode = self.encoder(mapp)
-
-        map_encode_robot = (
-            self.encoder_robot(footprint).flatten().view(mapp.shape[0], -1)
-        )
-
-        encoded_input = self.encoder_after(map_encode)
-        encoded_input = self.decoder_after(encoded_input)
-        encoded_input = self.pos(encoded_input)
-        encoded_input = self.transformer(encoded_input)
-        encoded_input = self.decoder_pos(encoded_input)
-        encoded_input = self.decoder(encoded_input).view(encoded_input.shape[0], -1)
-
-        encoded_input = torch.cat((encoded_input, map_encode_robot), -1)
-
-        return encoded_input
-
-    def encode_map_pos(self, batch):
-        batch = batch.reshape(-1, 615)                      # 1164
-
-        map_encode_robot = batch[..., :-3].to(self.device)
-
-        x_crd = torch.reshape(batch[..., -3:-2].to(self.device), (-1, 1))
-        y_crd = torch.reshape(batch[..., -2:-1].to(self.device), (-1, 1))
-        theta = torch.reshape(batch[..., -1:].to(self.device), (-1, 1))
-
-        x_cr_encode = self.x_cord(x_crd)
-        y_cr_encode = self.y_cord(y_crd)
-        tsin_encode = self.theta_sin(torch.sin(theta))
-        tcos_encode = self.theta_cos(torch.cos(theta))
-
-        encoded_input = torch.cat(
-            (map_encode_robot, x_cr_encode, y_cr_encode, tsin_encode, tcos_encode), 1
-        )
-        # encoded_input = self.linear_after(encoded_input)
-        #encoded_input_max = self.linear_after_max(encoded_input)
-        encoded_input_mean = self.linear_after_mean(encoded_input)
-
-        return encoded_input_mean
-    
     def step_ctrl(self, batch):
         mapp, x_crd, y_crd, theta = batch
         map_encode = self.encoder(mapp[:, :1, :, :])
@@ -255,12 +186,12 @@ class Autoencoder_path(nn.Module):
         tsin_encode = self.theta_sin(torch.sin(theta))
         tcos_encode = self.theta_cos(torch.cos(theta))
 
-        encoded_input = map_encode 
+        encoded_input = map_encode
         encoded_input = self.encoder_after(encoded_input)
         encoded_input = self.decoder_after(encoded_input)
-        
+
         decoded_map = self.decoder_MAP(encoded_input)
-        
+
         encoded_input = self.pos(encoded_input)
         encoded_input = self.transformer(encoded_input)
         encoded_input = self.decoder_pos(encoded_input)
@@ -278,16 +209,15 @@ class Autoencoder_path(nn.Module):
             1,
         )
 
-        #encoded_input_max = self.linear_after_max(encoded_input)
         encoded_input_mean = self.linear_after_mean(encoded_input)
 
-        return encoded_input_mean #, decoded_map
+        return encoded_input_mean
 
-    def training_step(self, batch, output):
+    def training_step(self, batch, batch_idx):
         optimizer = self.optimizers()
         sch = self.lr_schedulers()
 
-        loss = self.step_ctrl(batch)
+        loss = self.step(batch, batch_idx, "train")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -308,20 +238,6 @@ class Autoencoder_path(nn.Module):
 
         loss = self.recon_criterion((predictions + 1) / 2 * self.k, gt_hmap)
         self.log(f"{regime}_recon_loss", loss, on_step=False, on_epoch=True)
-        return loss
-
-    def training_step(self, batch, batch_idx):
-        optimizer = self.optimizers()
-        sch = self.lr_schedulers()
-
-        loss = self.step(batch, batch_idx, "train")
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        sch.step()
-
-        self.log("train_loss", loss, on_step=False, on_epoch=True)
-        self.log("lr", sch.get_last_lr()[0], on_step=True, on_epoch=False)
         return loss
 
     def validation_step(self, batch, batch_idx):
