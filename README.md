@@ -129,43 +129,11 @@ We address local trajectory planning for a mobile robot in the presence of stati
       --save-potential-gif \
       --allow-backward
 
-============================================================
-Benchmark complete: 100/100 scenarios evaluated
-  Success rate: 67/100
-  Collisions:   29/100
-============================================================
-  Metric                 Mean (successful only)
-  ---------------------- ----------------------
-  time_ms                            66853.5567
-  path_length_m                          2.9999
-  smoothness                             0.5742
-  aol                                    1.4871
-  safety_distance_m                      0.2645
-  goal_error_m                           0.0219
-
-
-
    cd NPField/script_d2
    python test_solver.py \
       --benchmark-json ../output/benchmark_scenarios.json \
       --save-potential-gif \
       --allow-backward
-
-
-============================================================
-Benchmark complete: 100/100 scenarios evaluated
-  Success rate: 64/100
-  Collisions:   36/100
-============================================================
-  Metric                 Mean (successful only)
-  ---------------------- ----------------------
-  time_ms                            26511.9422
-  path_length_m                          3.0370
-  smoothness                             0.3687
-  aol                                    1.4896
-  safety_distance_m                      0.2683
-  goal_error_m                           0.0153
-
 
    # D1 (finetuned weights):
    cd NPField/script_d1
@@ -174,22 +142,6 @@ Benchmark complete: 100/100 scenarios evaluated
       --finetune-checkpoint /app/NPField/dataset/trained-models/NPField_D1_finetune.pth \
       --save-potential-gif \
       --allow-backward
-
-
-============================================================
-Benchmark complete: 100/100 scenarios evaluated
-  Success rate: 70/100
-  Collisions:   28/100
-============================================================
-  Metric                 Mean (successful only)
-  ---------------------- ----------------------
-  time_ms                            23026.5629
-  path_length_m                          2.9960
-  smoothness                             0.5159
-  aol                                    1.5186
-  safety_distance_m                      0.2406
-  goal_error_m                           0.0186
-
    ```
 
 #### Troubleshooting:
@@ -224,6 +176,7 @@ If you use this framework please cite the following two papers:
       url={https://arxiv.org/abs/2310.16362}, 
 }
 ```
+
 
 
 
