@@ -3,8 +3,8 @@
 Official Implementation of [Dyn-NPField](https://arxiv.org/abs/2410.06819)
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/c7ac2be5-dedf-45bd-9446-36eadf804e3f" width="45%" alt="Dyn-NPField"/>
-  <img src="https://github.com/user-attachments/assets/708d6c69-51b1-453d-af0f-209310400143" width="45%" alt="Dyn-NPField"/>
+  <img src="https://github.com/user-attachments/assets/906cd8d4-b934-4fe5-8c50-4c6fef28f328" width="45%" alt="Dyn-NPField"/>
+  <img src="https://github.com/user-attachments/assets/aa96f2e7-ada7-442d-ba35-c25c33d356a4" width="45%" alt="Dyn-NPField"/>
 </p>
 
 
@@ -13,7 +13,8 @@ Official Implementation of [Dyn-NPField](https://arxiv.org/abs/2410.06819)
 ## OVERVIEW
 We address local trajectory planning for a mobile robot in the presence of static and dynamic obstacles. The trajectory is computed as a numerical solution to a Model Predictive Control (MPC) problem, with collision avoidance incorporated by adding obstacle repulsive potential to the MPC cost function. Our approach estimates this repulsive potential using a neural model. We explore three strategies for handling dynamic obstacles: treating them as a sequence of static environments, predicting a full sequence of repulsive potentials at once, and predicting future potentials step by step in an autoregressive mode.
 
-![image](https://github.com/user-attachments/assets/0907bb43-3868-4119-ab8e-52f5edcbd979)
+<img width="622" height="293" alt="npfield-gpt" src="https://github.com/user-attachments/assets/c691632e-fd19-49b2-a48b-8df7f621fb4f" />
+
 
 ## GETTING STARTED
 
@@ -176,6 +177,7 @@ If you use this framework please cite the following two papers:
       url={https://arxiv.org/abs/2310.16362}, 
 }
 ```
+
 
 
 
