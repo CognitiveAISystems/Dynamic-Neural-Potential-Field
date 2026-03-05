@@ -18,7 +18,7 @@ MAP_SCALE = 10.0
 V_MAX = 0.9
 
 # Obstacle prediction/motion settings shared by NN, MPC, and environment
-OBSTACLE_PRED_DT = 0.8  # seconds between NN obstacle predictions
+OBSTACLE_PRED_DT = 0.9  # seconds between NN obstacle predictions
 OBSTACLE_SPEED_MPS = 0.3  # dynamic obstacle speed (m/s)
 OBSTACLE_STEP_M = OBSTACLE_SPEED_MPS * OBSTACLE_PRED_DT
 
@@ -62,7 +62,7 @@ W_THETA_E = 0.01
 W_TIME_E = 0.01
 
 # Solver settings
-NLP_MAX_ITER = 120
+NLP_MAX_ITER = 50
 QP_MAX_ITER = 100
 NLP_TOL_STAT = 1e-4
 NLP_TOL_EQ = 1e-4

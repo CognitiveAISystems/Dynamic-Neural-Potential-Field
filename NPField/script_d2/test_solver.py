@@ -176,7 +176,7 @@ def test_solver(
     t = time.perf_counter()
     status = 1
     max_attempts = 3
-    tf_growth_factors = (1.1, 0.9)
+    tf_growth_factors = (1.1, 1.3)
     goal_reach_tol_m = 0.18
     final_goal_error_m = float("inf")
     selected_tf = base_desired_tf
@@ -986,25 +986,33 @@ def load_model(checkpoint_path, device):
 
 
 def compute_trajectory_metrics(path_mpc, map_data, num_map, obstacle_traj, total_elapsed_ms, goal_xy=None):
-    """Compute evaluation metrics from Table 1 of the paper.
+    """Compute evaluation metrics for trajectory quality.
 
-    Metrics (all lower-is-better except safety_distance where higher is safer):
+    Original metrics (all lower-is-better except safety_distance):
         time_ms           – end-to-end planning time (encoding + MPC solve)
         path_length_m     – Euclidean path length in metres
         smoothness        – Σ(Δθ²) / path_length
         aol               – Σ|Δθ| / path_length  (angle-over-length)
-        safety_distance_m – min SDF evaluated at robot footprint corners,
-                            also considering dynamic-obstacle proximity
+        safety_distance_m – min SDF at robot footprint, incl. dynamic obstacle
         goal_error_m      – Euclidean distance from final pose to goal
-        collision         – True if any footprint point penetrates obstacle
-        success           – True if no collision AND goal_error <= 0.18 m
+        collision / success
+
+    Additional metrics:
+        path_efficiency       – straight_line / path_length ∈ (0,1], higher = more direct
+        mean_clearance_m      – mean per-waypoint clearance, higher = safer overall
+        velocity_utilization  – mean(|v|) / V_MAX ∈ [0,1], higher = faster traversal
+        control_energy        – Σ(â²+ω̂²)·Δt, lower = less actuator effort
+        jerk                  – RMS of (Δâ/Δt, Δω̂/Δt), lower = smoother control
+        spl                   – Success weighted by Path Length (Anderson et al. 2018)
     """
     N = path_mpc.shape[0] - 1
     xs = path_mpc[:, 0] / MAP_SCALE
     ys = path_mpc[:, 1] / MAP_SCALE
     thetas = path_mpc[:, 3]
     times = path_mpc[:, 4]
+    velocities = path_mpc[:, 2]
 
+    # --- Path length & heading changes (AOL per bench-mr) ---
     points = np.column_stack((xs, ys))
     filtered_points = [points[0]]
     for p in points[1:]:
@@ -1030,9 +1038,48 @@ def compute_trajectory_metrics(path_mpc, map_data, num_map, obstacle_traj, total
     smoothness = float(np.sum(dtheta**2) / max(path_length, 1e-6))
     aol = float(np.sum(np.abs(dtheta)) / max(path_length, 1e-6))
 
-    static_occ = map_data[num_map][0]
-    binary_occ = (static_occ > 50).astype(np.float64)
-    sdf_grid = distance_transform_edt(1 - binary_occ) * 0.1
+    # --- Path efficiency ---
+    if goal_xy is not None:
+        straight_line = math.hypot(goal_xy[0] - xs[0], goal_xy[1] - ys[0])
+    else:
+        straight_line = math.hypot(xs[-1] - xs[0], ys[-1] - ys[0])
+    path_efficiency = min(straight_line / max(path_length, 1e-6), 1.0)
+
+    # --- Velocity utilization ---
+    mean_speed = float(np.mean(np.abs(velocities)))
+    velocity_utilization = mean_speed / float(V_MAX) if float(V_MAX) > 0 else 0.0
+
+    # --- Control energy & jerk (estimated from state trajectory) ---
+    dt_arr = np.diff(times)
+    dt_arr = np.where(np.abs(dt_arr) < 1e-9, 1e-9, dt_arr)
+    acc_est = np.diff(velocities) / dt_arr
+    dtheta_ctrl = np.diff(thetas)
+    dtheta_ctrl = (dtheta_ctrl + np.pi) % (2 * np.pi) - np.pi
+    omega_est = dtheta_ctrl / dt_arr
+
+    control_energy = float(np.sum((acc_est ** 2 + omega_est ** 2) * dt_arr))
+
+    if len(acc_est) >= 2:
+        dt_inner = dt_arr[:-1]
+        dt_inner = np.where(np.abs(dt_inner) < 1e-9, 1e-9, dt_inner)
+        jerk_a = np.diff(acc_est) / dt_inner
+        jerk_w = np.diff(omega_est) / dt_inner
+        jerk = float(np.sqrt(np.mean(jerk_a ** 2 + jerk_w ** 2)))
+    else:
+        jerk = 0.0
+
+    # --- Safety clearance (min and mean per-waypoint) ---
+    # Build per-timestep SDF grids with the dynamic obstacle drawn at its
+    # actual position, using the same rendering as the GIF generator.
+    base_map = map_data[num_map][0]
+    sdf_per_step = []
+    for step in range(len(obstacle_traj)):
+        combined = _draw_obstacle_on_map(
+            base_map,
+            obstacle_traj[step, 0], obstacle_traj[step, 1], obstacle_traj[step, 2],
+        )
+        binary_occ = (combined > 50).astype(np.float64)
+        sdf_per_step.append(distance_transform_edt(1 - binary_occ) * 0.1)
 
     fp_params = [
         (0.6, -0.59), (0.6, 0.59), (-0.6, -0.59), (-0.6, 0.59),
@@ -1040,6 +1087,7 @@ def compute_trajectory_metrics(path_mpc, map_data, num_map, obstacle_traj, total
     ]
 
     min_safety = float("inf")
+    per_wp_clearance = []
     for k in range(N + 1):
         rx, ry, rtheta = xs[k], ys[k], thetas[k]
         t_val = times[k]
@@ -1050,17 +1098,19 @@ def compute_trajectory_metrics(path_mpc, map_data, num_map, obstacle_traj, total
         ]
         corners.append((rx, ry))
 
+        obst_idx = min(int(max(t_val, 0.0) / OBSTACLE_PRED_DT), len(sdf_per_step) - 1)
+        sdf_grid = sdf_per_step[obst_idx]
+
+        wp_min = float("inf")
         for cx, cy in corners:
             gi = max(0, min(49, int(round((5 - cy) / 0.1))))
             gj = max(0, min(49, int(round(cx / 0.1))))
-            min_safety = min(min_safety, sdf_grid[gi, gj])
+            wp_min = min(wp_min, sdf_grid[gi, gj])
 
-        obst_idx = min(int(max(t_val, 0.0) / OBSTACLE_PRED_DT), len(obstacle_traj) - 1)
-        ox, oy = obstacle_traj[obst_idx, 0], obstacle_traj[obst_idx, 1]
-        for cx, cy in corners:
-            d = math.sqrt((cx - ox) ** 2 + (cy - oy) ** 2) - OBSTACLE_FOOTPRINT_RADIUS
-            min_safety = min(min_safety, d)
+        min_safety = min(min_safety, wp_min)
+        per_wp_clearance.append(wp_min)
 
+    mean_clearance = float(np.mean(per_wp_clearance))
     collision = bool(min_safety <= 0)
 
     if goal_xy is not None:
@@ -1069,6 +1119,12 @@ def compute_trajectory_metrics(path_mpc, map_data, num_map, obstacle_traj, total
         goal_error = float("nan")
 
     success = (not collision) and (goal_error <= 0.18)
+
+    # --- SPL (Success weighted by Path Length, Anderson et al. 2018) ---
+    if path_length > 0 and straight_line > 0:
+        spl = float(success) * (straight_line / max(path_length, straight_line))
+    else:
+        spl = 0.0
 
     return {
         "time_ms": round(float(total_elapsed_ms), 2),
@@ -1079,6 +1135,12 @@ def compute_trajectory_metrics(path_mpc, map_data, num_map, obstacle_traj, total
         "goal_error_m": round(float(goal_error), 4),
         "collision": bool(collision),
         "success": bool(success),
+        "path_efficiency": round(float(path_efficiency), 4),
+        "mean_clearance_m": round(float(mean_clearance), 4),
+        "velocity_utilization": round(float(velocity_utilization), 4),
+        "control_energy": round(float(control_energy), 4),
+        "jerk": round(float(jerk), 4),
+        "spl": round(float(spl), 4),
     }
 
 
@@ -1123,6 +1185,12 @@ def run_benchmark(
         "aol",
         "safety_distance_m",
         "goal_error_m",
+        "path_efficiency",
+        "mean_clearance_m",
+        "velocity_utilization",
+        "control_energy",
+        "jerk",
+        "spl",
         "collision",
         "success",
         "status",
@@ -1131,6 +1199,8 @@ def run_benchmark(
     numeric_cols = [
         "time_ms", "path_length_m", "smoothness", "aol",
         "safety_distance_m", "goal_error_m",
+        "path_efficiency", "mean_clearance_m", "velocity_utilization",
+        "control_energy", "jerk", "spl",
     ]
 
     results = []
@@ -1195,6 +1265,12 @@ def run_benchmark(
                         "aol": "",
                         "safety_distance_m": "",
                         "goal_error_m": "",
+                        "path_efficiency": "",
+                        "mean_clearance_m": "",
+                        "velocity_utilization": "",
+                        "control_energy": "",
+                        "jerk": "",
+                        "spl": "",
                         "collision": "",
                         "success": False,
                     }
@@ -1210,6 +1286,12 @@ def run_benchmark(
                         metrics["aol"],
                         metrics["safety_distance_m"],
                         metrics["goal_error_m"],
+                        metrics["path_efficiency"],
+                        metrics["mean_clearance_m"],
+                        metrics["velocity_utilization"],
+                        metrics["control_energy"],
+                        metrics["jerk"],
+                        metrics["spl"],
                         metrics["collision"],
                         metrics["success"],
                         metrics["status"],
@@ -1235,6 +1317,12 @@ def run_benchmark(
                 round(np.mean([r["aol"] for r in successful]), 6),
                 round(np.mean([r["safety_distance_m"] for r in successful]), 4),
                 round(np.mean([r["goal_error_m"] for r in successful]), 4),
+                round(np.mean([r["path_efficiency"] for r in successful]), 4),
+                round(np.mean([r["mean_clearance_m"] for r in successful]), 4),
+                round(np.mean([r["velocity_utilization"] for r in successful]), 4),
+                round(np.mean([r["control_energy"] for r in successful]), 4),
+                round(np.mean([r["jerk"] for r in successful]), 4),
+                round(np.mean([r["spl"] for r in successful]), 4),
                 0,  # no collisions in successful episodes
                 f"{n_success_for_avg}/{n_eval}",
                 "summary",

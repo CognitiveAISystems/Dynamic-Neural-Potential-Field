@@ -1,0 +1,128 @@
+{
+  "scenarios": [
+    {
+      "id": 0,
+      "description": "3 obstacles converging toward agent start",
+      "map_id": 0,
+      "agent": { "x_path": [1.0, 4.0], "y_path": [2.5, 2.5], "theta_0": 0.0 },
+      "obstacles": [
+        { "id": 0, "label": "head-on",    "start": [3.5, 2.5], "end": [1.0, 2.5], "color": "blue"   },
+        { "id": 1, "label": "from-above",  "start": [3.0, 4.0], "end": [1.0, 2.5], "color": "green"  },
+        { "id": 2, "label": "from-below",  "start": [3.0, 1.0], "end": [1.0, 2.5], "color": "orange" }
+      ],
+      "mpc_params_override": {}
+    },
+    {
+      "id": 1,
+      "description": "2 obstacles — alternating gate crossings",
+      "map_id": 0,
+      "agent": { "x_path": [0.5, 4.5], "y_path": [2.5, 2.5], "theta_0": 0.0 },
+      "obstacles": [
+        { "id": 0, "label": "gate-upper",  "start": [2.0, 3.8], "end": [2.0, 1.2], "color": "blue"   },
+        { "id": 1, "label": "gate-lower",  "start": [3.5, 1.2], "end": [3.5, 3.8], "color": "orange" }
+      ],
+      "mpc_params_override": {}
+    },
+    {
+      "id": 2,
+      "description": "3 obstacles — slalom gates, agent snakes up-down-up",
+      "map_id": 0,
+      "agent": { "x_path": [0.5, 4.5], "y_path": [2.5, 2.5], "theta_0": 0.0 },
+      "obstacles": [
+        { "id": 0, "label": "gate-1-down", "start": [1.5, 3.5], "end": [1.5, 1.0], "color": "blue"   },
+        { "id": 1, "label": "gate-2-up",   "start": [2.8, 1.0], "end": [2.8, 4.0], "color": "green"  },
+        { "id": 2, "label": "gate-3-down", "start": [4.0, 3.5], "end": [4.0, 1.0], "color": "orange" }
+      ],
+      "mpc_params_override": {}
+    },
+    {
+      "id": 3,
+      "description": "3 obstacles — horizontal wall sweeping left, agent threads the gap",
+      "map_id": 0,
+      "agent": { "x_path": [0.5, 4.5], "y_path": [2.5, 2.5], "theta_0": 0.0 },
+      "obstacles": [
+        { "id": 0, "label": "wall-low",    "start": [3.5, 1.5], "end": [1.0, 1.5], "color": "blue"   },
+        { "id": 1, "label": "wall-mid",    "start": [3.5, 2.5], "end": [1.0, 2.5], "color": "red"    },
+        { "id": 2, "label": "wall-high",   "start": [3.5, 3.5], "end": [1.0, 3.5], "color": "orange" }
+      ],
+      "mpc_params_override": {}
+    },
+    {
+      "id": 4,
+      "description": "4 obstacles — diamond closing on centre, agent must dodge through",
+      "map_id": 0,
+      "agent": { "x_path": [0.5, 4.5], "y_path": [2.5, 2.5], "theta_0": 0.0 },
+      "obstacles": [
+        { "id": 0, "label": "top",         "start": [2.5, 4.2], "end": [2.5, 1.0], "color": "blue"   },
+        { "id": 1, "label": "bottom",      "start": [2.5, 0.8], "end": [2.5, 4.0], "color": "green"  },
+        { "id": 2, "label": "right",       "start": [4.0, 2.5], "end": [1.0, 2.5], "color": "red"    },
+        { "id": 3, "label": "left-chase",  "start": [2.0, 2.5], "end": [5.0, 2.5], "color": "orange" }
+      ],
+      "mpc_params_override": {}
+    },
+    {
+      "id": 5,
+      "description": "4 obstacles — tight alternating corridor gates",
+      "map_id": 0,
+      "agent": { "x_path": [0.5, 4.5], "y_path": [2.5, 2.5], "theta_0": 0.0 },
+      "obstacles": [
+        { "id": 0, "label": "cor-1-down",  "start": [1.5, 3.8], "end": [1.5, 1.2], "color": "blue"   },
+        { "id": 1, "label": "cor-2-up",    "start": [2.5, 1.2], "end": [2.5, 3.8], "color": "green"  },
+        { "id": 2, "label": "cor-3-down",  "start": [3.2, 3.8], "end": [3.2, 1.2], "color": "red"    },
+        { "id": 3, "label": "cor-4-up",    "start": [4.0, 1.2], "end": [4.0, 3.8], "color": "orange" }
+      ],
+      "mpc_params_override": {}
+    },
+    {
+      "id": 6,
+      "description": "5 obstacles — dense serpentine gauntlet",
+      "map_id": 0,
+      "agent": { "x_path": [0.3, 4.7], "y_path": [2.5, 2.5], "theta_0": 0.0 },
+      "obstacles": [
+        { "id": 0, "label": "serp-1",      "start": [1.0, 3.8], "end": [1.0, 1.2], "color": "blue"   },
+        { "id": 1, "label": "serp-2",      "start": [1.9, 1.2], "end": [1.9, 3.8], "color": "green"  },
+        { "id": 2, "label": "serp-3",      "start": [2.8, 3.8], "end": [2.8, 1.2], "color": "red"    },
+        { "id": 3, "label": "serp-4",      "start": [3.7, 1.2], "end": [3.7, 3.8], "color": "orange" },
+        { "id": 4, "label": "serp-5",      "start": [4.5, 3.8], "end": [4.5, 1.2], "color": "purple" }
+      ],
+      "mpc_params_override": {}
+    },
+    {
+      "id": 7,
+      "description": "2 obstacles — diagonal scissor crossing",
+      "map_id": 0,
+      "agent": { "x_path": [0.5, 4.5], "y_path": [2.5, 2.5], "theta_0": 0.0 },
+      "obstacles": [
+        { "id": 0, "label": "diag-NE-SW",  "start": [3.5, 4.0], "end": [1.5, 1.0], "color": "blue"   },
+        { "id": 1, "label": "diag-SE-NW",  "start": [3.5, 1.0], "end": [1.5, 4.0], "color": "orange" }
+      ],
+      "mpc_params_override": {}
+    },
+    {
+      "id": 8,
+      "description": "3 obstacles — pincer on diagonal agent path",
+      "map_id": 0,
+      "agent": { "x_path": [0.5, 4.5], "y_path": [1.5, 3.5], "theta_0": 0.46 },
+      "obstacles": [
+        { "id": 0, "label": "pincer-top",  "start": [2.5, 4.2], "end": [2.5, 0.5], "color": "blue"   },
+        { "id": 1, "label": "pincer-bot",  "start": [2.0, 0.5], "end": [3.0, 4.2], "color": "green"  },
+        { "id": 2, "label": "head-on",     "start": [4.0, 3.0], "end": [1.0, 2.0], "color": "red"    }
+      ],
+      "mpc_params_override": {}
+    },
+    {
+      "id": 9,
+      "description": "5 obstacles — staggered gauntlet with mixed headings",
+      "map_id": 0,
+      "agent": { "x_path": [0.3, 4.7], "y_path": [2.5, 2.5], "theta_0": 0.0 },
+      "obstacles": [
+        { "id": 0, "label": "left-drop",   "start": [1.0, 4.0], "end": [1.0, 1.0], "color": "blue"   },
+        { "id": 1, "label": "sweep-left",  "start": [2.5, 1.2], "end": [1.0, 1.2], "color": "green"  },
+        { "id": 2, "label": "mid-rise",    "start": [2.8, 1.0], "end": [2.8, 4.0], "color": "red"    },
+        { "id": 3, "label": "sweep-right", "start": [3.0, 3.8], "end": [4.5, 3.8], "color": "orange" },
+        { "id": 4, "label": "right-drop",  "start": [4.2, 4.0], "end": [4.2, 1.0], "color": "purple" }
+      ],
+      "mpc_params_override": {}
+    }
+  ]
+}
