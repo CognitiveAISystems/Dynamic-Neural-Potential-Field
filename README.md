@@ -21,7 +21,7 @@ The framework comprises three neural architectures that balance accuracy and lat
 | **NPField-DynamicMLP** (`script_d2`) | Predicts future potentials in parallel via separate MLP heads conditioned on dynamic obstacle state | Mid-range latency |
 | **NPField-GPT** (`script_d3`) | Non-autoregressive Transformer predicts the full potential horizon in one forward pass | Best safety & path quality |
 
-<img width="622" height="293" alt="npfield-gpt" src="https://github.com/user-attachments/assets/c691632e-fd19-49b2-a48b-8df7f621fb4f" />
+<img width="622" height="293" alt="npfield-gpt" src="https://github.com/user-attachments/assets/cf9e7698-d297-40b5-b273-6e3f10be902e" />
 
 ## Project Structure
 
@@ -311,3 +311,4 @@ If you use this work, please cite:
   organization={IEEE}
 }
 ```
+
