@@ -167,16 +167,16 @@ If you use this framework please cite the following two papers:
 
 ### NPField:
 ```
-@misc{alhaddad2023neuralpotentialfieldobstacleaware,
-      title={Neural Potential Field for Obstacle-Aware Local Motion Planning}, 
-      author={Muhammad Alhaddad and Konstantin Mironov and Aleksey Staroverov and Aleksandr Panov},
-      year={2023},
-      eprint={2310.16362},
-      archivePrefix={arXiv},
-      primaryClass={cs.RO},
-      url={https://arxiv.org/abs/2310.16362}, 
+@inproceedings{alhaddad2024neural,
+  title={Neural potential field for obstacle-aware local motion planning},
+  author={Alhaddad, Muhammad and Mironov, Konstantin and Staroverov, Aleksey and Panov, Aleksandr},
+  booktitle={2024 IEEE International Conference on Robotics and Automation (ICRA)},
+  pages={9313--9320},
+  year={2024},
+  organization={IEEE}
 }
 ```
+
 
 
 
